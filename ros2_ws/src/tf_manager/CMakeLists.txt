@@ -4,6 +4,7 @@ project(tf_manager)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(tf2_ros REQUIRED)
+ament_package()
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -14,4 +15,3 @@ install(TARGETS
   tf_manager_node
   DESTINATION lib/${PROJECT_NAME})
 
-ament_package()
