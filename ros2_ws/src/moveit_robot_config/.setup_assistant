@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: robot_description
+    relative_path: urdf/combined_car_franka.urdf
+  srdf:
+    relative_path: config/mobile_base_with_franka.srdf
+  package_settings:
+    author_name: test
+    author_email: exam@exam.com
+    generated_timestamp: 1770474487
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
