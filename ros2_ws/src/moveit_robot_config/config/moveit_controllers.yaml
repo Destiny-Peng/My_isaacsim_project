@@ -8,8 +8,8 @@ moveit_simple_controller_manager:
     - hand_controller
 
   arm_controller:
-    action_ns: follow_joint_trajectory
     type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
     joints:
       - panda_joint1
       - panda_joint2
@@ -20,8 +20,8 @@ moveit_simple_controller_manager:
       - panda_joint7
   hand_controller:
     type: GripperCommand
+    action_ns: gripper_cmd
     joints:
       - panda_finger_joint1
       - panda_finger_joint2
-    action_ns: gripper_cmd
     default: true

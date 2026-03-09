@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="mobile_base_with_franka">
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <xacro:arg name="ros2_control_hardware_type" default="mock_components" />
 
     <!-- Import mobile_base_with_franka urdf file -->
     <xacro:include filename="$(find robot_description)/urdf/combined_car_franka.urdf" />
@@ -9,6 +10,6 @@
     <xacro:include filename="mobile_base_with_franka.ros2_control.xacro" />
 
 
-    <xacro:mobile_base_with_franka_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+    <xacro:mobile_base_with_franka_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)" ros2_control_hardware_type="$(arg ros2_control_hardware_type)"/>
 
 </robot>
