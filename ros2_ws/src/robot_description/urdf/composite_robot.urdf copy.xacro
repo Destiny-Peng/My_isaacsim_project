@@ -1,0 +1,94 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="composite_robot">
+
+  <!-- Parameters -->
+  <xacro:property name="wheel_radius" value="0.08"/>
+  <xacro:property name="base_length" value="0.5"/>
+  <xacro:property name="base_width" value="0.4"/>
+
+  <!-- Base link -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="${base_length} ${base_width} 0.15"/>
+      </geometry>
+      <material name="grey"/>
+    </visual>
+    <inertial>
+      <mass value="20.0"/>
+      <inertia ixx="1.0" iyy="1.0" izz="1.0"/>
+    </inertial>
+  </link>
+
+  <!-- Arm base attached to mobile base -->
+  <link name="arm_base"/>
+  <joint name="base_to_arm" type="fixed">
+    <parent link="base_link"/>
+    <child link="arm_base"/>
+    <origin xyz="0.0 0.0 0.15" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Simple 6-DOF manipulator (minimal links for simulation alignment) -->
+  <link name="link_1"/>
+  <joint name="joint_1" type="revolute">
+    <parent link="arm_base"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="50" velocity="1.0" lower="-3.14" upper="3.14"/>
+  </joint>
+
+  <link name="link_2"/>
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="50" velocity="1.0" lower="-3.14" upper="3.14"/>
+  </joint>
+
+  <link name="link_3"/>
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="30" velocity="1.0" lower="-3.14" upper="3.14"/>
+  </joint>
+
+  <link name="link_4"/>
+  <joint name="joint_4" type="revolute">
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <origin xyz="0 0 0.15" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="20" velocity="1.0" lower="-3.14" upper="3.14"/>
+  </joint>
+
+  <link name="link_5"/>
+  <joint name="joint_5" type="revolute">
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <origin xyz="0 0 0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="10" velocity="1.0" lower="-3.14" upper="3.14"/>
+  </joint>
+
+  <link name="ee_link"/>
+  <joint name="joint_6" type="revolute">
+    <parent link="link_5"/>
+    <child link="ee_link"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="1.0" lower="-3.14" upper="3.14"/>
+  </joint>
+
+  <!-- Camera mounted on arm_base (frame used by perception) -->
+  <link name="camera_link"/>
+  <joint name="armbase_to_camera" type="fixed">
+    <parent link="arm_base"/>
+    <child link="camera_link"/>
+    <origin xyz="0.2 0 0.2" rpy="0 0 0"/>
+  </joint>
+
+</robot>

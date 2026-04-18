@@ -30,3 +30,4 @@ arm_controller:
 hand_controller:
   ros__parameters:
     joint: panda_finger_joint1
+    use_sim_time: true
