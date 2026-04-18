@@ -1,0 +1,24 @@
+mtc_pick_place_demo:
+  ros__parameters:
+    arm_group_name: arm
+    hand_group_name: hand
+    hand_frame: panda_panda_hand
+    world_frame: world
+    object_name: demo_cube
+
+    pregrasp: open
+    grasp: close
+
+    pick_pose_xyz: [0.55, 0.0, 0.20]
+    place_pose_xyz: [0.45, -0.25, 0.20]
+
+    object_size_xyz: [0.04, 0.04, 0.12]
+    grasp_z_offset: 0.08
+    grasp_rpy: [1.571, 0.785, 1.571]
+    grasp_angle_delta: 0.261799
+    grasp_max_ik_solutions: 16
+    enable_allow_grasp_collision_stage: false
+
+    approach_distance: 0.10
+    lift_distance: 0.12
+    place_retreat_distance: 0.10

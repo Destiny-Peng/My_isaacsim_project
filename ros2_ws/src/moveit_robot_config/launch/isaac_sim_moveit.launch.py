@@ -16,6 +16,8 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.actions import TimerAction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -36,6 +38,37 @@ def generate_launch_description():
         "use_sim_time",
         default_value="true",
         description="Use simulation clock if true",
+    )
+
+    launch_rviz = DeclareLaunchArgument(
+        "launch_rviz",
+        default_value="true",
+        description="Whether to launch RViz in this launch file",
+    )
+
+    # Keep controller_manager and spawners configurable to avoid startup races with simulation clock.
+    use_sim_time_for_control = DeclareLaunchArgument(
+        "use_sim_time_for_control",
+        default_value="false",
+        description="Use simulation clock for ros2_control node/spawners",
+    )
+
+    controller_manager_timeout = DeclareLaunchArgument(
+        "controller_manager_timeout",
+        default_value="60.0",
+        description="Timeout (seconds) for spawners waiting for /controller_manager services",
+    )
+
+    controller_spawn_delay = DeclareLaunchArgument(
+        "controller_spawn_delay",
+        default_value="5.0",
+        description="Delay (seconds) before spawning controllers",
+    )
+
+    spawn_aux_controllers = DeclareLaunchArgument(
+        "spawn_aux_controllers",
+        default_value="true",
+        description="Whether to spawn joint_state_broadcaster and hand_controller",
     )
 
     moveit_config = (
@@ -77,6 +110,7 @@ def generate_launch_description():
         package="rviz2",
         executable="rviz2",
         name="rviz2",
+        condition=IfCondition(LaunchConfiguration("launch_rviz")),
         output="log",
         arguments=["-d", rviz_config_file],
         parameters=[
@@ -131,7 +165,7 @@ def generate_launch_description():
         executable="ros2_control_node",
         parameters=[
             ros2_controllers_path,
-            {"use_sim_time": LaunchConfiguration("use_sim_time")},
+            {"use_sim_time": LaunchConfiguration("use_sim_time_for_control")},
         ],
         remappings=[
             ("controller_manager/robot_description", "robot_description"),
@@ -142,39 +176,72 @@ def generate_launch_description():
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
+        condition=IfCondition(LaunchConfiguration("spawn_aux_controllers")),
         arguments=[
             "joint_state_broadcaster",
-            "--controller-manager",
-            "controller_manager",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", LaunchConfiguration("controller_manager_timeout"),
+            "--param-file", ros2_controllers_path,
         ],
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time_for_control")}],
     )
 
     arm_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["arm_controller", "-c", "/controller_manager"],
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        arguments=[
+            "arm_controller",
+            "-c", "/controller_manager",
+            "--controller-manager-timeout", LaunchConfiguration("controller_manager_timeout"),
+            "--param-file", ros2_controllers_path,
+        ],
+        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time_for_control")}],
     )
 
     hand_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["hand_controller", "-c", "/controller_manager"],
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
+        condition=IfCondition(LaunchConfiguration("spawn_aux_controllers")),
+        arguments=[
+            "hand_controller",
+            "-c", "/controller_manager",
+            "--controller-manager-timeout", LaunchConfiguration("controller_manager_timeout"),
+            "--param-file", ros2_controllers_path,
+        ],
+        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time_for_control")}],
+    )
+
+    delayed_joint_state_spawner = TimerAction(
+        period=LaunchConfiguration("controller_spawn_delay"),
+        actions=[joint_state_broadcaster_spawner],
+    )
+
+    delayed_arm_spawner = TimerAction(
+        period=LaunchConfiguration("controller_spawn_delay"),
+        actions=[arm_controller_spawner],
+    )
+
+    delayed_hand_spawner = TimerAction(
+        period=LaunchConfiguration("controller_spawn_delay"),
+        actions=[hand_controller_spawner],
     )
 
     return LaunchDescription(
         [
             ros2_control_hardware_type,
             use_sim_time,
+            launch_rviz,
+            use_sim_time_for_control,
+            controller_manager_timeout,
+            controller_spawn_delay,
+            spawn_aux_controllers,
             rviz_node,
             world2robot_tf_node,
             robot_state_publisher,
             move_group_node,
             ros2_control_node,
-            joint_state_broadcaster_spawner,
-            arm_controller_spawner,
-            hand_controller_spawner,
+            delayed_joint_state_spawner,
+            delayed_arm_spawner,
+            delayed_hand_spawner,
         ]
     )
