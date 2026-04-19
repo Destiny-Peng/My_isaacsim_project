@@ -1,0 +1,23 @@
+launch:
+  use_sim_time: true
+  use_sim_time_for_control: false
+  controller_spawn_delay: 5.0
+  controller_manager_timeout: 60.0
+  mtc_start_delay: 8.0
+  enable_gripper_actions: false
+  enable_initial_open_hand_stage: false
+  enable_move_to_pick_stage: true
+  enable_move_to_place_stage: true
+  spawn_aux_controllers: true
+  launch_mtc_rviz: true
+
+pick_place:
+  pick_x: 0.55
+  pick_y: 0.0
+  pick_z: 0.60
+  place_x: 0.45
+  place_y: -0.25
+  place_z: 0.60
+  object_size_x: 0.04
+  object_size_y: 0.04
+  object_size_z: 0.12

@@ -48,11 +48,37 @@ It is intended for future agents to quickly resume work without re-discovery.
    - Added grasp pose tunables (`grasp_z_offset`, `grasp_rpy`, `grasp_angle_delta`, `grasp_max_ik_solutions`).
    - Switched CollisionObject pick pose semantics to center-based to align with IsaacSim demo cube center semantics.
 
+10. Package-level README + param-file standardization (latest)
+    - Rewritten all repository README files to a unified 3-part structure:
+       - package overview,
+       - runnable startup steps,
+       - parameter reference.
+    - Added param-file workflow to reduce long CLI command errors:
+       - IsaacSim launcher supports `--param-file` YAML defaults.
+       - Added default YAML files for sim, MoveIt, and MTC launch paths.
+       - Added short Python wrapper entrypoints for MoveIt and MTC using `--param-file`.
+    - Per-package completion record:
+       - root: `README.md` rewritten.
+       - sim launcher package: `sim/launch/README.md` rewritten; `sim_default.yaml` added.
+       - ROS2 workspace overview: `ros2_ws/README.md` rewritten.
+       - `moveit_robot_config`: README added + launch defaults YAML added.
+       - `moveit_mtc_pick_place_demo`: README rewritten + launch defaults YAML added.
+       - `robot_description`: README rewritten.
+       - `moveit_task_constructor` (workspace vendored package): top-level, demo, and scope_guard README rewritten for this project usage context.
+
+11. Context persistence document bootstrap (latest)
+    - Added `docs/ENV_PROJECT_KNOWLEDGE.md` as a persistent knowledge template.
+    - Recorded confirmed environment constraints:
+       - alias `isaac='conda activate env_issaclab'`
+       - `env_issaclab` is IsaacSim-only; non-Isaac project tasks should stay on default/system environment.
+    - Left fill-in placeholders for user-provided facts (env variables, validation criteria, troubleshooting cases).
+
 ### In Progress
 
 1. End-to-end validation of MTC pick/place with synced Isaac object in one command sequence.
 2. Consistency checks between MTC CollisionObject pose and IsaacSim cube pose for varied test cases.
-3. Resolve current OMPL `Invalid start state` failure after grasp-stage collision bottleneck was removed.
+3. Resolve current OMPL `Invalid start state` / grasp collision ping-pong around approach<->grasp transition.
+4. Runtime validation of IsaacSim launcher in a fully provisioned IsaacLab environment (`isaaclab` module unavailable in current shell).
 
 ### Latest Debug Notes
 
@@ -67,15 +93,58 @@ It is intended for future agents to quickly resume work without re-discovery.
    - Grasp IK root cause: grasp target sampled too close to object center + stage/property wiring issues.
 8. After applying grasp-target and stage fixes, failure signature moved from `eef in collision` to planner-side `Invalid start state` retries.
 9. This indicates the original grasp-collision bottleneck was mitigated, but start-state validity (scene/trajectory preconditions) still needs final convergence.
+10. New observation (this round): running `mtc_pick_place_demo.launch.py` while another MoveIt stack is already running introduces stack contention/noisy failures; isolate to `sim + mtc launch` only.
+11. New code-level changes (this round):
+   - Added `grasp_ik_ignore_collisions` parameter (default false in code; tuned in YAML during tests).
+   - Added `grasp_x_offset` / `grasp_y_offset` parameters for grasp pose center offset.
+   - Added `additional_allowed_collision_links` parameter for selective collision relaxation.
+   - Moved `allow hand-object collision` stage to run after `grasp pose IK`.
+12. Current iteration status:
+   - with strict collision settings: failure at `grasp pose IK` (`demo_cube - panda_panda_hand`).
+   - with relaxed collision settings: solver can produce grasp candidates, but may regress to `approach object` / `Invalid start state` depending on profile.
+13. 2026-04-18 deep-dive updates (new):
+   - Added startup guard in `mtc_pick_place_demo.cpp`: wait for at least one `/joint_states` message before creating the task.
+   - Added richer plan-failure instrumentation (`task.explainFailure(...)`) to improve stage-level diagnostics when plan returns.
+   - Verified via logs that MTC now prints `Received joint state from topic '/joint_states'` before task construction.
+   - Despite the guard, OMPL still repeatedly reports `Skipping invalid start state` / `Invalid start state`.
+   - Live planning-scene snapshot still reports robot state positions as all zeros, matching observed invalid-start loop.
+   - Cross-check of `/joint_states` in this run also showed all arm joints at zero, so the system currently enters planning from a zero configuration profile.
+   - Quick service validation confirms a manually provided zero joint state can be `valid=True`; therefore the invalid-start loop is likely request/context-specific (not a simple static-collision-only failure).
+14. 2026-04-18 baseline-alignment updates (new):
+    - Reworked `mtc_pick_place_demo.cpp` to align task skeleton with official `moveit_task_constructor/demo` flow:
+       - monitor grasp generation from `open hand` stage output,
+       - monitor place generation from `pick object` container output,
+       - use CartesianPath for approach/lift/lower/retreat motions,
+       - align approach/retreat direction conventions with official demo.
+    - Kept project-specific URDF/group/object parameters while removing non-essential deviations from official stage ordering.
+    - Updated default params to reduce non-baseline noise:
+       - `enable_gripper_actions` default enabled,
+       - `approach_min_distance` / `approach_distance` restored to non-zero values,
+       - `grasp_ik_ignore_collisions` default restored to false.
+15. Process-discipline updates (new):
+    - Added mandatory pre-flight checklist in `ENV_PROJECT_KNOWLEDGE.md`:
+       - must-read docs order,
+       - source/cwd/log-window/process-cleanup checks,
+       - one-variable-per-test logging discipline.
+16. Official-demo alignment debug progression (new):
+   - Initial officialized run failed at `open hand` with `GOAL_STATE_INVALID` under current URDF.
+   - Added URDF-adaptation switch: `enable_initial_open_hand_stage` (default false), with monitored stage fallback to `current state`.
+   - Next failure shifted to grasp/pick pipeline and then to `approach object: missing ik_frame`; fixed by explicitly setting IK frame on approach stage.
+   - Current status: task now gets significantly deeper into planning tree before timeout window, with no regression to earlier `Invalid start state` as first-order blocker in this branch.
+17. Pick-only interface-chain fix and validation (new):
+   - Root-cause of latest `Task init failed` was confirmed: disabling `enable_move_to_place_stage` previously disabled only the `move to place` connect stage, while the `place object` container remained in task graph.
+   - Fixed `mtc_pick_place_demo.cpp` so `enable_move_to_place_stage` now gates the whole place container subtree.
+   - Rebuild and pick-only regression run (`enable_move_to_place_stage:=false`, `enable_gripper_actions:=false`) no longer fails during `task.init()` with interface mismatch.
+   - Current blocker after this fix: plan still fails in pick pipeline (`move to pick`/`grasp pose IK` path), but this is now a planning-quality issue rather than task-graph wiring failure.
 
 ### Expected Next Steps
 
-1. Add a single shared config source (optional) for MTC + Isaac object parameters.
-2. Resolve `Invalid start state` by tightening pre-grasp approach preconditions and default pick pose envelope.
-3. Add a lightweight validation script for:
+1. Finalize one stable default profile for grasp/approach by fixing stage ordering + collision policy + pose offsets together (single tested bundle).
+2. Add a lightweight validation script for:
    - topic health,
    - controller state,
    - object sync consistency.
+3. (Optional) Add a single shared config source for MTC + Isaac object parameters.
 
 ## 2. Key Decisions
 
@@ -101,15 +170,30 @@ It is intended for future agents to quickly resume work without re-discovery.
 ## 4. Changed Files (Recent)
 
 - `sim/launch/run_combined_car_franka_headless.py`
+- `sim/launch/config/sim_default.yaml`
 - `sim/launch/README.md`
 - `ros2_ws/src/moveit_robot_config/launch/isaac_sim_moveit.launch.py`
+- `ros2_ws/src/moveit_robot_config/config/isaac_sim_moveit_defaults.yaml`
+- `ros2_ws/src/moveit_robot_config/README.md`
 - `ros2_ws/src/moveit_mtc_pick_place_demo/launch/mtc_pick_place_demo.launch.py`
 - `ros2_ws/src/moveit_mtc_pick_place_demo/src/mtc_pick_place_demo.cpp`
 - `ros2_ws/src/moveit_mtc_pick_place_demo/README.md`
+- `ros2_ws/src/moveit_mtc_pick_place_demo/config/mtc_launch_defaults.yaml`
 - `ros2_ws/src/moveit_mtc_pick_place_demo/config/mtc_pick_place.rviz`
+- `ros2_ws/scripts/run_moveit_isaac_test.py`
+- `ros2_ws/scripts/run_mtc_demo.py`
 - `README.md`
 - `ros2_ws/README.md`
+- `ros2_ws/src/robot_description/README.md`
+- `ros2_ws/src/moveit_task_constructor/README.md`
+- `ros2_ws/src/moveit_task_constructor/demo/README.md`
+- `ros2_ws/src/moveit_task_constructor/core/src/scope_guard/README.md`
 - `docs/ARCHITECTURE.md`
+- `docs/TASK_RECORD.md`
+- `docs/ENV_PROJECT_KNOWLEDGE.md`
+- `ros2_ws/src/moveit_mtc_pick_place_demo/src/mtc_pick_place_demo.cpp`
+- `ros2_ws/src/moveit_mtc_pick_place_demo/config/pick_place_params.yaml`
+- `ros2_ws/src/moveit_mtc_pick_place_demo/src/mtc_pick_place_demo.cpp` (2026-04-18: joint-state wait + failure-detail logging)
 
 ## 5. Operational Notes
 

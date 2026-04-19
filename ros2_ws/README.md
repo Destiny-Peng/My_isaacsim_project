@@ -1,51 +1,54 @@
-# ROS2 Workspace (`ros2_ws`)
+# ROS2 Workspace
 
-本工作区当前主要聚焦 `mobile_base_with_franka` 的 MoveIt2 + MTC + IsaacSim 联动。
+## 1. 包概述
 
-## 1. 包与职责
+`ros2_ws` 是本项目的 ROS2 运行与开发主工作区，负责承接仿真桥接后的控制、规划和任务编排。
 
-- `src/robot_description`
-  - 机器人 URDF/USD 资源与模型文件。
-  - 用于 MoveIt 配置、Isaac Sim 场景引用、以及控制链统一模型源。
+主要组成：
 
-- `src/moveit_robot_config`
-  - MoveIt 配置包（SRDF、controllers、launch）。
-  - 关键入口：`launch/isaac_sim_moveit.launch.py`。
-  - 已包含 controller 时序稳定化参数（delay/timeout/use_sim_time_for_control）。
+- `src/robot_description`: 机器人模型与资源。
+- `src/moveit_robot_config`: MoveIt Setup Assistant 生成并扩展的配置包。
+- `src/moveit_mtc_pick_place_demo`: 基于 MTC 的 pick&place 测试包。
+- `src/moveit_task_constructor`: 上游 MTC 源码（作为依赖与参考）。
 
-- `src/moveit_mtc_pick_place_demo`
-  - 本仓库的 MTC pick and place 示例实现。
-  - 关键入口：`launch/mtc_pick_place_demo.launch.py`。
-  - 已支持：MTC RViz 面板、pick/place 参数覆盖、语义参数显式注入。
+## 2. 如何启动测试
 
-- `src/moveit_task_constructor`
-  - 官方 MTC 源码（core/demo/visualization/capabilities/msgs）。
-  - 作为依赖与参考实现，便于二次开发和排障。
-
-## 2. 推荐构建命令
+先构建工作区：
 
 ```bash
 cd /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build \
-  --base-paths /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws/src \
-  --build-base /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws/build \
-  --install-base /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws/install
+colcon build
 source install/setup.bash
 ```
 
-## 3. 联动运行入口
+推荐测试顺序：
 
-1. 先启动 IsaacSim bridge（见 `sim/launch/README.md`）。
-2. 再启动 MTC demo：
+1. 先启动仿真（在 `sim/launch` 执行，详见该目录 README）。
+2. 仅验证 MoveIt 与 Isaac 联动：
 
 ```bash
-ros2 launch moveit_mtc_pick_place_demo mtc_pick_place_demo.launch.py
+python3 /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws/scripts/run_moveit_isaac_test.py \
+  --param-file /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws/src/moveit_robot_config/config/isaac_sim_moveit_defaults.yaml
 ```
 
-## 4. 交接导航
+3. 验证 MTC demo：
 
-- 项目总览：`../README.md`
-- 架构文档：`../docs/ARCHITECTURE.md`
-- 任务记录：`../docs/TASK_RECORD.md`
-- MTC demo 说明：`src/moveit_mtc_pick_place_demo/README.md`
+```bash
+python3 /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws/scripts/run_mtc_demo.py \
+  --param-file /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws/src/moveit_mtc_pick_place_demo/config/mtc_launch_defaults.yaml
+```
+
+## 3. 参数说明
+
+为避免长命令误配，已提供默认 YAML：
+
+- MoveIt 启动默认参数：`src/moveit_robot_config/config/isaac_sim_moveit_defaults.yaml`
+- MTC 启动默认参数：`src/moveit_mtc_pick_place_demo/config/mtc_launch_defaults.yaml`
+
+两个统一入口脚本：
+
+- `scripts/run_moveit_isaac_test.py --param-file <yaml>`
+- `scripts/run_mtc_demo.py --param-file <yaml>`
+
+`--dry-run` 可用于先打印即将执行的 `ros2 launch` 命令。

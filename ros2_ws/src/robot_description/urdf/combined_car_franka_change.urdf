@@ -204,18 +204,19 @@
   </joint>
 
   <joint name="panda_finger_joint1" type="prismatic">
-    <origin xyz="-0.0584 -0.0000001 -0. " rpy="-1.5707964 -0.7853983 1.5707964"/>
+    <origin xyz="-0.0584 -0.0000001 -0. " rpy="0. 0. 0.7853983"/>
     <parent link="panda_panda_hand"/>
     <child link="panda_panda_leftfinger"/>
     <axis xyz="1. 0. 0."/>
     <limit lower="0." upper="0.04" effort="7.1999998" velocity="0.2"/>
   </joint>
   <joint name="panda_finger_joint2" type="prismatic">
-    <origin xyz="-0.0584 -0.0000001 -0. " rpy="1.5707964 0.7853983 -1.5707964"/>
+    <origin xyz="-0.0584 -0.0000001 -0. " rpy="0. 0. 0.7853983"/>
     <parent link="panda_panda_hand"/>
     <child link="panda_panda_rightfinger"/>
     <axis xyz="1. 0. 0."/>
     <limit lower="0." upper="0.04" effort="0." velocity="10."/>
+    <mimic joint="panda_finger_joint1" />
   </joint>
   <joint name="panda_hand_joint" type="fixed">
     <origin xyz="0.1069999 0.0000004 -0.0000002" rpy="3.1415925 0. -3.1415894"/>
@@ -244,11 +245,11 @@
     <limit lower="-2.8973001" upper="2.8973001" effort="87." velocity="2.1749999"/>
   </joint>
   <joint name="panda_joint4" type="revolute">
-    <origin xyz="-0. -0.0000001 -0.0824999" rpy="-0.0000002 0.0000002 -1.5707968"/>
+    <origin xyz="-0. -0.0000001 -0.0824999" rpy="-0.0000002 0.0000002 0."/>
     <parent link="panda_panda_link3"/>
     <child link="panda_panda_link4"/>
     <axis xyz="1. 0. 0."/>
-    <limit lower="-3.0718" upper="-0.0698" effort="87." velocity="2.1749999"/>
+    <limit lower="-3.0718" upper="2.0" effort="87." velocity="2.1749999"/>
   </joint>
   <joint name="panda_joint5" type="revolute">
     <origin xyz="0.0000005 0.3839998 0.0824996" rpy="-0.0000003 0.0000001 1.5707946"/>
@@ -278,13 +279,13 @@
       <inertia ixx="0.0000002" ixy="0." ixz="0." iyy="0.0000001" iyz="0." izz="0.0000002"/>
     </inertial>
     <visual>
-      <origin xyz="-0.0000001 -0.0000001 0. " rpy="1.5707964 -0.7853979 -1.5707964"/>
+      <origin xyz="-0.0000001 -0.0000001 0. " rpy="0. -1.5707964 0."/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_hand_geometry_panda_hand.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="-0.0000001 -0.0000001 0. " rpy="1.5707964 -0.7853979 -1.5707964"/>
+      <origin xyz="-0.0000001 -0.0000001 0. " rpy="0. -1.5707964 0."/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_hand_geometry_panda_hand.obj" scale="1. 1. 1."/>
       </geometry>
@@ -297,13 +298,13 @@
       <inertia ixx="0.0001" ixy="0." ixz="0." iyy="0.0001" iyz="0." izz="0.0001"/>
     </inertial>
     <visual>
-      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. -1.5707967"/>
+      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. 0."/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_leftfinger_geometry_panda_leftfinger.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. -1.5707967"/>
+      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. 0."/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_leftfinger_geometry_panda_leftfinger.obj" scale="1. 1. 1."/>
       </geometry>
@@ -449,13 +450,13 @@
       <inertia ixx="0.0000001" ixy="0." ixz="0." iyy="0.0000001" iyz="0." izz="0.0000001"/>
     </inertial>
     <visual>
-      <origin xyz="-0.0000001 0.0000001 -0.0000002" rpy="-0.0000032 1.5707963 0. "/>
+      <origin xyz="-0.0000001 0.0000001 -0.0000002" rpy="-1.5707963 0.785398163 -1.5707963 "/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_link7_geometry_panda_link7.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="-0.0000001 0.0000001 -0.0000002" rpy="-0.0000032 1.5707963 0. "/>
+      <origin xyz="-0.0000001 0.0000001 -0.0000002" rpy="-1.5707963 0.785398163 -1.5707963"/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_link7_geometry_panda_link7.obj" scale="1. 1. 1."/>
       </geometry>
@@ -468,13 +469,13 @@
       <inertia ixx="0.0001" ixy="0." ixz="0." iyy="0.0001" iyz="0." izz="0.0001"/>
     </inertial>
     <visual>
-      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. 1.5707964"/>
+      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. 0."/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_rightfinger_geometry_panda_rightfinger.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. 1.5707964"/>
+      <origin xyz="-0. -0. -0.0000001" rpy="-0. -0. 0."/>
       <geometry>
         <mesh filename="file:///data/project/isaac_test/meshesfranka/panda_panda_rightfinger_geometry_panda_rightfinger.obj" scale="1. 1. 1."/>
       </geometry>

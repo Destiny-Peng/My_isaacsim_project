@@ -13,6 +13,7 @@ import os
 import urllib.parse
 import sys
 import time
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -430,6 +431,41 @@ def _parse_vec3(text: str, name: str) -> tuple[float, float, float]:
     return float(parts[0]), float(parts[1]), float(parts[2])
 
 
+def _flatten_config_dict(data: dict, out: dict | None = None) -> dict:
+    if out is None:
+        out = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            _flatten_config_dict(value, out)
+        else:
+            out[key] = value
+    return out
+
+
+def _load_param_file_defaults(param_file: str) -> dict:
+    if not param_file:
+        return {}
+
+    file_path = Path(param_file).expanduser().resolve()
+    if not file_path.exists():
+        raise FileNotFoundError(f"Param file not found: {file_path}")
+
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required for --param-file support") from exc
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"Param file must contain a YAML mapping object: {file_path}")
+
+    defaults = _flatten_config_dict(raw)
+    print(f"[INFO] Loaded parameter profile: {file_path}")
+    return defaults
+
+
 def _upsert_demo_cube(
     stage,
     prim_path: str,
@@ -598,7 +634,18 @@ def _setup_ros2_joint_bridge_graph(
 
 
 def main() -> int:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--param-file", type=str, default="", help="YAML file with default launch parameters")
+    pre_args, _ = pre_parser.parse_known_args()
+    yaml_defaults = _load_param_file_defaults(pre_args.param_file) if pre_args.param_file else {}
+
     parser = argparse.ArgumentParser(description="Run combined_car_franka.usd in headless Isaac Sim")
+    parser.add_argument(
+        "--param-file",
+        type=str,
+        default="",
+        help="YAML file with default launch parameters. CLI args override YAML values.",
+    )
     parser.add_argument(
         "--usd",
         type=str,
@@ -705,7 +752,7 @@ def main() -> int:
     parser.add_argument(
         "--demo-object-pick-position",
         type=str,
-        default="0.55,0.0,0.20",
+        default="0.55,0.0,0.60",
         help="Demo cube center xyz in world frame",
     )
     parser.add_argument(
@@ -714,6 +761,9 @@ def main() -> int:
         default="0.9,0.3,0.1",
         help="Demo cube display color rgb in range [0,1]",
     )
+    if yaml_defaults:
+        parser.set_defaults(**yaml_defaults)
+
     args = parser.parse_args()
 
     usd_path = Path(args.usd).expanduser().resolve()
