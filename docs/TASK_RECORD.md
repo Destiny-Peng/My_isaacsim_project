@@ -128,6 +128,35 @@ It is intended for future agents to quickly resume work without re-discovery.
       - non-increasing `JointTrajectory` `time_from_start` values are adjusted to strictly increasing with a small minimum delta before execution.
    - Fresh-stack validation result:
       - full IsaacSim + MoveIt + MTC run reached `MTC pick and place execution completed successfully`.
+18. 2026-04-20 simulation fidelity tuning (latest)
+   - Addressed object non-follow / penetration symptoms in IsaacSim demo object path:
+      - Demo cube now supports dynamic rigid-body mode (`demo_object_dynamic`) with mass and optional CCD.
+      - Added attachment emulation in sim runtime (`emulate_grasp_attachment`) so object follows hand link when gripper closes near cube and detaches when reopened.
+   - Added speed-tuning controls in MTC node:
+      - `plan_velocity_scaling`
+      - `plan_acceleration_scaling`
+      - `cartesian_step_size`
+   - Updated default profiles for smoother sim response:
+      - lowered bridge smoothing limits (`default_max_joint_velocity`, `max_joint_step_rad`)
+      - enabled demo object dynamic/CCD/attachment emulation in `sim_default.yaml`.
+19. 2026-04-20 reset/retry and init-pose alignment (latest)
+   - IsaacSim launcher now supports startup pose synchronization from YAML:
+      - reads `initial_positions.yaml` and applies values to articulation joints at startup.
+   - IsaacSim runtime reset services added (Python bridge node):
+      - `/isaac/reset_demo_cube`
+      - `/isaac/reset_robot_initial_pose`
+      - `/isaac/reset_demo_scene`
+   - MTC node now supports in-process rerun/reset (no full process restart):
+      - `/mtc_pick_place_demo/run_task`
+      - `/mtc_pick_place_demo/reset_and_run`
+   - MoveIt planning scene now explicitly includes support surface collision object (`support_surface`) so table participates in planning collision checks.
+20. 2026-04-20 MTC retry reset fix + table thickness tuning (latest)
+   - Root-cause of repeated run failure after previous execute attempts addressed:
+      - added planning-scene retry cleanup to remove attached object state and world collision objects before rerun.
+   - Added MTC reset-only service:
+      - `/mtc_pick_place_demo/reset_task_state`
+   - `reset_and_run` now performs planning-scene reset first, then executes new run.
+   - Increased support surface collision thickness (z) in both MTC and IsaacSim defaults to reduce near-table risky paths and improve planning/simulation consistency.
 
 ### In Progress
 

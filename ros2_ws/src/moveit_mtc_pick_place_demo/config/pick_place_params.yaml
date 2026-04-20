@@ -5,7 +5,7 @@ mtc_pick_place_demo:
     hand_frame: panda_panda_hand
     world_frame: world
     object_name: demo_cube
-    support_surface: ""
+    support_surface: demo_table
 
     pregrasp: open
     grasp: close
@@ -18,11 +18,14 @@ mtc_pick_place_demo:
     enable_move_home_stage: false
     execute: true
     keep_alive_after_execute_failure: true
+    auto_run_on_start: true
 
-    pick_pose_xyz: [0.55, 0.0, 0.60]
-    place_pose_xyz: [0.55, 0.0, 0.60]
+    pick_pose_xyz: [0.55, 0.0, 0.70]
+    place_pose_xyz: [0.55, 0.0, 0.70]
 
     object_size_xyz: [0.04, 0.04, 0.12]
+    support_surface_xyz: [0.55, 0.0, 0.49]
+    support_surface_size_xyz: [0.8, 0.8, 0.10]
     grasp_x_offset: -0.1
     grasp_y_offset: 0.0
     grasp_z_offset: 0.0
@@ -37,3 +40,6 @@ mtc_pick_place_demo:
     approach_distance: 0.12
     lift_distance: 0.12
     place_retreat_distance: 0.03
+    plan_velocity_scaling: 0.2
+    plan_acceleration_scaling: 0.2
+    cartesian_step_size: 0.01

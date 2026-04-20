@@ -14,6 +14,7 @@ import urllib.parse
 import sys
 import time
 import copy
+from typing import Callable
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,8 @@ class _PythonRos2JointBridge:
         smooth_position_commands: bool,
         default_max_joint_velocity: float,
         max_joint_step_rad: float,
+        initial_joint_positions: dict[str, float] | None = None,
+        on_reset_demo_cube: Callable[[], tuple[bool, str]] | None = None,
     ) -> None:
         self.articulation_prim = articulation_prim
         self.joint_cmd_topic = joint_cmd_topic
@@ -47,12 +50,17 @@ class _PythonRos2JointBridge:
         self.smooth_position_commands = smooth_position_commands
         self.default_max_joint_velocity = max(0.01, default_max_joint_velocity)
         self.max_joint_step_rad = max(1e-4, max_joint_step_rad)
+        self.initial_joint_positions = initial_joint_positions or {}
+        self.on_reset_demo_cube = on_reset_demo_cube
 
         self._owns_rclpy = False
         self._node = None
         self._joint_state_pub = None
         self._clock_pub = None
         self._joint_cmd_sub = None
+        self._reset_cube_srv = None
+        self._reset_robot_srv = None
+        self._reset_scene_srv = None
 
         self._art = None
         self._dof_names = []
@@ -117,6 +125,7 @@ class _PythonRos2JointBridge:
         from rclpy.qos import ReliabilityPolicy
         from rosgraph_msgs.msg import Clock
         from sensor_msgs.msg import JointState
+        from std_srvs.srv import Trigger
 
         if not rclpy.ok():
             rclpy.init(args=None)
@@ -133,6 +142,11 @@ class _PythonRos2JointBridge:
         self._joint_state_pub = self._node.create_publisher(JointState, self.joint_state_topic, qos)
         self._clock_pub = self._node.create_publisher(Clock, self.clock_topic, qos)
         self._joint_cmd_sub = self._node.create_subscription(JointState, self.joint_cmd_topic, self._on_joint_cmd, qos)
+        if self.on_reset_demo_cube is not None:
+            self._reset_cube_srv = self._node.create_service(Trigger, "isaac/reset_demo_cube", self._on_reset_demo_cube)
+            self._reset_scene_srv = self._node.create_service(Trigger, "isaac/reset_demo_scene", self._on_reset_demo_scene)
+        if self.initial_joint_positions:
+            self._reset_robot_srv = self._node.create_service(Trigger, "isaac/reset_robot_initial_pose", self._on_reset_robot_initial_pose)
 
         self._art = SingleArticulation(self.articulation_prim)
         self._art.initialize()
@@ -146,6 +160,10 @@ class _PythonRos2JointBridge:
         print(f"[INFO] Python ROS2 bridge started: node={self.node_name}")
         print(f"[INFO] Python bridge articulation: {self.articulation_prim}, dof={len(self._dof_names)}")
         print(f"[INFO] Python bridge topics: cmd={self.joint_cmd_topic}, state={self.joint_state_topic}, clock={self.clock_topic}")
+
+        if self.initial_joint_positions:
+            updated, missing = self.set_joint_positions_by_name(self.initial_joint_positions, mirror_finger_joint=True)
+            print(f"[INFO] Applied initial joint positions: updated={updated}, missing={missing}")
 
     def _on_joint_cmd(self, msg) -> None:
         dof = len(self._dof_names)
@@ -258,6 +276,88 @@ class _PythonRos2JointBridge:
         msg.clock.sec = sec
         msg.clock.nanosec = nsec
         self._clock_pub.publish(msg)
+
+    def get_joint_position(self, joint_name: str) -> float | None:
+        if self._art is None:
+            return None
+        idx = self._dof_name_to_idx.get(joint_name)
+        if idx is None:
+            return None
+        positions = np.array(self._art.get_joint_positions(), dtype=np.float64)
+        if idx >= len(positions):
+            return None
+        return float(positions[idx])
+
+    def set_joint_positions_by_name(self, joint_positions: dict[str, float], mirror_finger_joint: bool = True) -> tuple[int, int]:
+        if self._art is None:
+            return 0, len(joint_positions)
+
+        current = np.array(self._art.get_joint_positions(), dtype=np.float64)
+        updated = 0
+        missing = 0
+
+        for name, value in joint_positions.items():
+            idx = self._dof_name_to_idx.get(name)
+            if idx is None or idx >= len(current):
+                missing += 1
+                continue
+            current[idx] = float(value)
+            updated += 1
+
+        if mirror_finger_joint and "panda_finger_joint1" in joint_positions and "panda_finger_joint2" not in joint_positions:
+            idx2 = self._dof_name_to_idx.get("panda_finger_joint2")
+            idx1 = self._dof_name_to_idx.get("panda_finger_joint1")
+            if idx1 is not None and idx2 is not None and idx1 < len(current) and idx2 < len(current):
+                current[idx2] = current[idx1]
+
+        self._art.set_joint_positions(current)
+        self._latest_pos_cmd = None
+        self._latest_vel_cmd = None
+        self._latest_eff_cmd = None
+        self._last_apply_sim_time_s = None
+        return updated, missing
+
+    def _on_reset_demo_cube(self, request, response):
+        del request
+        if self.on_reset_demo_cube is None:
+            response.success = False
+            response.message = "demo cube reset callback is not configured"
+            return response
+
+        ok, msg = self.on_reset_demo_cube()
+        response.success = bool(ok)
+        response.message = msg
+        return response
+
+    def _on_reset_robot_initial_pose(self, request, response):
+        del request
+        if not self.initial_joint_positions:
+            response.success = False
+            response.message = "initial_joint_positions is empty"
+            return response
+
+        updated, missing = self.set_joint_positions_by_name(self.initial_joint_positions, mirror_finger_joint=True)
+        response.success = updated > 0
+        response.message = f"robot reset to initial pose: updated={updated}, missing={missing}"
+        return response
+
+    def _on_reset_demo_scene(self, request, response):
+        del request
+        cube_ok = True
+        cube_msg = "cube reset skipped"
+        if self.on_reset_demo_cube is not None:
+            cube_ok, cube_msg = self.on_reset_demo_cube()
+
+        robot_ok = True
+        robot_msg = "robot reset skipped"
+        if self.initial_joint_positions:
+            updated, missing = self.set_joint_positions_by_name(self.initial_joint_positions, mirror_finger_joint=True)
+            robot_ok = updated > 0
+            robot_msg = f"robot reset: updated={updated}, missing={missing}"
+
+        response.success = bool(cube_ok and robot_ok)
+        response.message = f"{cube_msg}; {robot_msg}"
+        return response
 
     def step(self, sim_time_s: float, sim_step: int) -> None:
         import rclpy
@@ -466,16 +566,53 @@ def _load_param_file_defaults(param_file: str) -> dict:
     return defaults
 
 
+def _load_initial_joint_positions(param_file: str) -> dict[str, float]:
+    if not param_file:
+        return {}
+
+    file_path = Path(param_file).expanduser().resolve()
+    if not file_path.exists():
+        print(f"[WARN] Initial positions YAML not found: {file_path}")
+        return {}
+
+    try:
+        import yaml
+    except ImportError:
+        print("[WARN] PyYAML is not available, skip initial positions load")
+        return {}
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    data = raw.get("initial_positions", {}) if isinstance(raw, dict) else {}
+    if not isinstance(data, dict):
+        print(f"[WARN] Invalid initial_positions structure in: {file_path}")
+        return {}
+
+    parsed = {}
+    for k, v in data.items():
+        try:
+            parsed[str(k)] = float(v)
+        except Exception:
+            continue
+
+    print(f"[INFO] Loaded initial positions: {file_path} (count={len(parsed)})")
+    return parsed
+
+
 def _upsert_demo_cube(
     stage,
     prim_path: str,
     size_xyz: tuple[float, float, float],
     center_xyz: tuple[float, float, float],
     color_rgb: tuple[float, float, float],
+    dynamic: bool,
+    mass_kg: float,
+    enable_ccd: bool,
 ) -> None:
     """Create/update a cube in Isaac Sim to mirror MoveIt PlanningScene object.
 
-    The cube is created as a static collider so it participates in simulation collisions.
+    The cube is created as a collider. It can optionally be dynamic for grasp interaction.
     """
     from pxr import Gf
     from pxr import UsdGeom
@@ -495,10 +632,135 @@ def _upsert_demo_cube(
     # Mark as collider so physics contacts can be resolved in simulation.
     UsdPhysics.CollisionAPI.Apply(cube_prim)
 
+    if dynamic:
+        rigid_api = UsdPhysics.RigidBodyAPI.Apply(cube_prim)
+        rigid_api.CreateRigidBodyEnabledAttr(True)
+        mass_api = UsdPhysics.MassAPI.Apply(cube_prim)
+        mass_api.CreateMassAttr(max(0.001, mass_kg))
+
+        if enable_ccd:
+            try:
+                from pxr import PhysxSchema
+
+                physx_rigid_api = PhysxSchema.PhysxRigidBodyAPI.Apply(cube_prim)
+                physx_rigid_api.CreateEnableCCDAttr(True)
+            except Exception as exc:
+                print(f"[WARN] Failed to enable CCD on demo cube: {exc}")
+
     print(
         "[INFO] Demo cube synced in Isaac Sim: "
+        f"prim={prim_path}, center={center_xyz}, size={size_xyz}, color={color_rgb}, "
+        f"dynamic={dynamic}, mass_kg={mass_kg}, ccd={enable_ccd}"
+    )
+
+
+def _upsert_support_surface(
+    stage,
+    prim_path: str,
+    size_xyz: tuple[float, float, float],
+    center_xyz: tuple[float, float, float],
+    color_rgb: tuple[float, float, float],
+) -> None:
+    """Create/update a static support surface collider for demo cube contact."""
+    from pxr import Gf
+    from pxr import UsdGeom
+    from pxr import UsdPhysics
+
+    table = UsdGeom.Cube.Define(stage, prim_path)
+    table_prim = table.GetPrim()
+    table.GetSizeAttr().Set(2.0)
+
+    xform = UsdGeom.XformCommonAPI(table_prim)
+    xform.SetTranslate(Gf.Vec3d(center_xyz[0], center_xyz[1], center_xyz[2]))
+    xform.SetScale(Gf.Vec3f(size_xyz[0] * 0.3, size_xyz[1] * 0.3, size_xyz[2] * 0.3))
+    table.CreateDisplayColorAttr().Set([Gf.Vec3f(color_rgb[0], color_rgb[1], color_rgb[2])])
+
+    # Keep table static but collidable so dynamic cube can rest on it.
+    UsdPhysics.CollisionAPI.Apply(table_prim)
+
+    print(
+        "[INFO] Support surface synced in Isaac Sim: "
         f"prim={prim_path}, center={center_xyz}, size={size_xyz}, color={color_rgb}"
     )
+
+
+def _get_prim_world_translation(stage, prim_path: str) -> np.ndarray | None:
+    from pxr import UsdGeom
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        return None
+
+    xform = UsdGeom.Xformable(prim)
+    world = xform.ComputeLocalToWorldTransform(0.0)
+    t = world.ExtractTranslation()
+    return np.array([float(t[0]), float(t[1]), float(t[2])], dtype=np.float64)
+
+
+def _set_prim_world_translation(stage, prim_path: str, xyz: np.ndarray) -> bool:
+    from pxr import Gf
+    from pxr import UsdGeom
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        return False
+
+    xform = UsdGeom.XformCommonAPI(prim)
+    xform.SetTranslate(Gf.Vec3d(float(xyz[0]), float(xyz[1]), float(xyz[2])))
+    return True
+
+
+class _DemoObjectAttachmentEmulator:
+    """Emulate gripper attach/detach in simulation so object follows hand when grasped."""
+
+    def __init__(
+        self,
+        stage,
+        cube_prim: str,
+        hand_prim: str,
+        close_threshold: float,
+        open_threshold: float,
+        attach_distance_threshold: float,
+    ) -> None:
+        self._stage = stage
+        self._cube_prim = cube_prim
+        self._hand_prim = hand_prim
+        self._close_threshold = close_threshold
+        self._open_threshold = open_threshold
+        self._attach_distance_threshold = attach_distance_threshold
+        self._attached = False
+        self._offset = np.zeros((3,), dtype=np.float64)
+
+    def step(self, finger_pos: float | None) -> None:
+        if finger_pos is None:
+            return
+
+        hand_xyz = _get_prim_world_translation(self._stage, self._hand_prim)
+        cube_xyz = _get_prim_world_translation(self._stage, self._cube_prim)
+        if hand_xyz is None or cube_xyz is None:
+            return
+
+        is_closed = finger_pos <= self._close_threshold
+        is_open = finger_pos >= self._open_threshold
+
+        if self._attached:
+            target = hand_xyz + self._offset
+            _set_prim_world_translation(self._stage, self._cube_prim, target)
+            if is_open:
+                self._attached = False
+                print("[INFO] Demo cube detached from hand")
+            return
+
+        if is_closed:
+            dist = float(np.linalg.norm(cube_xyz - hand_xyz))
+            if dist <= self._attach_distance_threshold:
+                self._attached = True
+                self._offset = cube_xyz - hand_xyz
+                print(f"[INFO] Demo cube attached to hand (distance={dist:.4f} m)")
+
+    def reset(self) -> None:
+        self._attached = False
+        self._offset = np.zeros((3,), dtype=np.float64)
 
 
 def _setup_ros2_joint_bridge_graph(
@@ -761,10 +1023,98 @@ def main() -> int:
         default="0.9,0.3,0.1",
         help="Demo cube display color rgb in range [0,1]",
     )
+    parser.add_argument(
+        "--sync-demo-support-surface",
+        action="store_true",
+        help="Create/update static support surface (table) collider under demo cube",
+    )
+    parser.add_argument(
+        "--support-surface-prim",
+        type=str,
+        default="/World/demo_table",
+        help="USD prim path for support surface in Isaac Sim",
+    )
+    parser.add_argument(
+        "--support-surface-size",
+        type=str,
+        default="0.8,0.8,0.04",
+        help="Support surface size xyz in meters",
+    )
+    parser.add_argument(
+        "--support-surface-center",
+        type=str,
+        default="",
+        help="Support surface center xyz in world frame. Empty means auto-place under demo cube.",
+    )
+    parser.add_argument(
+        "--support-surface-color",
+        type=str,
+        default="0.65,0.62,0.56",
+        help="Support surface display color rgb in range [0,1]",
+    )
+    parser.add_argument(
+        "--demo-object-dynamic",
+        action="store_true",
+        help="Create demo cube as dynamic rigid body instead of static collider",
+    )
+    parser.add_argument(
+        "--demo-object-mass-kg",
+        type=float,
+        default=0.08,
+        help="Demo cube mass in kg when dynamic mode is enabled",
+    )
+    parser.add_argument(
+        "--demo-object-enable-ccd",
+        action="store_true",
+        help="Enable CCD on demo cube rigid body to reduce tunneling",
+    )
+    parser.add_argument(
+        "--emulate-grasp-attachment",
+        action="store_true",
+        help="Emulate attach/detach in sim so demo cube follows hand when gripper closes nearby",
+    )
+    parser.add_argument(
+        "--grasp-hand-prim",
+        type=str,
+        default="",
+        help="Hand link prim used for attachment emulation (default: <articulation_prim>/panda_panda_hand)",
+    )
+    parser.add_argument(
+        "--grasp-finger-joint",
+        type=str,
+        default="panda_finger_joint1",
+        help="Finger joint used to infer open/close for attachment emulation",
+    )
+    parser.add_argument(
+        "--grasp-close-threshold",
+        type=float,
+        default=0.01,
+        help="Finger joint threshold at or below which grasp is considered closed",
+    )
+    parser.add_argument(
+        "--grasp-open-threshold",
+        type=float,
+        default=0.03,
+        help="Finger joint threshold at or above which grasp is considered open",
+    )
+    parser.add_argument(
+        "--grasp-attach-distance-threshold",
+        type=float,
+        default=0.08,
+        help="Max hand-to-cube distance (m) to latch attachment when closing",
+    )
+    parser.add_argument(
+        "--initial-joint-positions-yaml",
+        type=str,
+        default=(Path(__file__).resolve().parents[2] / "ros2_ws/src/moveit_robot_config/config/initial_positions.yaml").as_posix(),
+        help="YAML file with initial joint positions to apply at IsaacSim startup/reset",
+    )
     if yaml_defaults:
         parser.set_defaults(**yaml_defaults)
 
     args = parser.parse_args()
+
+    initial_joint_positions = _load_initial_joint_positions(args.initial_joint_positions_yaml)
 
     usd_path = Path(args.usd).expanduser().resolve()
     if not usd_path.exists():
@@ -845,11 +1195,44 @@ def main() -> int:
                 size_xyz=demo_size,
                 center_xyz=demo_center,
                 color_rgb=demo_color,
+                dynamic=args.demo_object_dynamic,
+                mass_kg=args.demo_object_mass_kg,
+                enable_ccd=args.demo_object_enable_ccd,
             )
         except Exception as exc:
             print(f"[ERROR] Failed to sync demo cube in Isaac Sim: {exc}")
             simulation_app.close()
             return 4
+
+    if args.sync_demo_support_surface:
+        try:
+            table_size = _parse_vec3(args.support_surface_size, "--support-surface-size")
+            table_color = _parse_vec3(args.support_surface_color, "--support-surface-color")
+
+            if args.support_surface_center.strip():
+                table_center = _parse_vec3(args.support_surface_center, "--support-surface-center")
+            elif args.sync_mtc_demo_object:
+                demo_size = _parse_vec3(args.demo_object_size, "--demo-object-size")
+                demo_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
+                table_center = (
+                    demo_center[0],
+                    demo_center[1],
+                    demo_center[2] - 0.3 * demo_size[2] - 0.3 * table_size[2],
+                )
+            else:
+                table_center = (0.55, 0.0, 0.52)
+
+            _upsert_support_surface(
+                stage=stage,
+                prim_path=args.support_surface_prim,
+                size_xyz=table_size,
+                center_xyz=table_center,
+                color_rgb=table_color,
+            )
+        except Exception as exc:
+            print(f"[ERROR] Failed to sync support surface in Isaac Sim: {exc}")
+            simulation_app.close()
+            return 5
 
     if args.inspect_graph:
         _inspect_graph_prims(stage)
@@ -870,6 +1253,17 @@ def main() -> int:
             print("[WARN] Failed to create ROS2 MoveIt joint bridge graph. Scene will still run.")
 
     python_bridge = None
+    attachment_emulator = None
+
+    def reset_demo_cube_cb() -> tuple[bool, str]:
+        cube_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
+        ok = _set_prim_world_translation(stage, args.demo_object_prim, np.array(cube_center, dtype=np.float64))
+        if not ok:
+            return False, f"failed to set demo cube transform: {args.demo_object_prim}"
+        if attachment_emulator is not None:
+            attachment_emulator.reset()
+        return True, f"demo cube reset to {cube_center}"
+
     timeline = omni.timeline.get_timeline_interface()
     timeline.play()
 
@@ -890,8 +1284,27 @@ def main() -> int:
             smooth_position_commands=not args.disable_position_command_smoothing,
             default_max_joint_velocity=args.default_max_joint_velocity,
             max_joint_step_rad=args.max_joint_step_rad,
+            initial_joint_positions=initial_joint_positions,
+            on_reset_demo_cube=reset_demo_cube_cb if args.sync_mtc_demo_object else None,
         )
         python_bridge.start()
+
+        if args.sync_mtc_demo_object and args.emulate_grasp_attachment:
+            hand_prim = args.grasp_hand_prim.strip()
+            if not hand_prim:
+                hand_prim = f"{args.articulation_prim.rstrip('/')}/panda_panda_hand"
+            attachment_emulator = _DemoObjectAttachmentEmulator(
+                stage=stage,
+                cube_prim=args.demo_object_prim,
+                hand_prim=hand_prim,
+                close_threshold=args.grasp_close_threshold,
+                open_threshold=args.grasp_open_threshold,
+                attach_distance_threshold=args.grasp_attach_distance_threshold,
+            )
+            print(
+                "[INFO] Attachment emulation enabled: "
+                f"cube={args.demo_object_prim}, hand={hand_prim}, finger_joint={args.grasp_finger_joint}"
+            )
 
     app = omni.kit.app.get_app()
     for i in range(args.steps):
@@ -899,6 +1312,9 @@ def main() -> int:
         if python_bridge is not None:
             sim_time_s = timeline.get_current_time()
             python_bridge.step(sim_time_s=sim_time_s, sim_step=i)
+            if attachment_emulator is not None:
+                finger_pos = python_bridge.get_joint_position(args.grasp_finger_joint)
+                attachment_emulator.step(finger_pos=finger_pos)
         if i % max(1, args.render_interval) == 0:
             print(f"[SIM] step={i}")
 
