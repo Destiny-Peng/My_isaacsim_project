@@ -1,5 +1,5 @@
 simulation:
-  gui: true
+  headless: true
   launcher_backend: isaacsim
   setup_ros2_python_bridge: true
   sync_mtc_demo_object: true

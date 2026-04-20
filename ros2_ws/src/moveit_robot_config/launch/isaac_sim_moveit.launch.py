@@ -19,6 +19,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.actions import TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
+from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -49,7 +50,7 @@ def generate_launch_description():
     # Keep controller_manager and spawners configurable to avoid startup races with simulation clock.
     use_sim_time_for_control = DeclareLaunchArgument(
         "use_sim_time_for_control",
-        default_value="false",
+        default_value="true",
         description="Use simulation clock for ros2_control node/spawners",
     )
 
@@ -87,6 +88,11 @@ def generate_launch_description():
         .to_moveit_configs()
     )
 
+    # Required by MTC task.execute(): provides execute_task_solution capability in move_group.
+    move_group_capabilities = {
+        "capabilities": "move_group/ExecuteTaskSolutionCapability"
+    }
+
     # Start the actual move_group node/action server
     move_group_node = Node(
         package="moveit_ros_move_group",
@@ -94,6 +100,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             moveit_config.to_dict(),
+            move_group_capabilities,
             {"use_sim_time": LaunchConfiguration("use_sim_time")},
         ],
         arguments=["--ros-args", "--log-level", "info"],
@@ -181,9 +188,7 @@ def generate_launch_description():
             "joint_state_broadcaster",
             "--controller-manager", "/controller_manager",
             "--controller-manager-timeout", LaunchConfiguration("controller_manager_timeout"),
-            "--param-file", ros2_controllers_path,
         ],
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time_for_control")}],
     )
 
     arm_controller_spawner = Node(
@@ -193,9 +198,7 @@ def generate_launch_description():
             "arm_controller",
             "-c", "/controller_manager",
             "--controller-manager-timeout", LaunchConfiguration("controller_manager_timeout"),
-            "--param-file", ros2_controllers_path,
         ],
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time_for_control")}],
     )
 
     hand_controller_spawner = Node(
@@ -206,9 +209,7 @@ def generate_launch_description():
             "hand_controller",
             "-c", "/controller_manager",
             "--controller-manager-timeout", LaunchConfiguration("controller_manager_timeout"),
-            "--param-file", ros2_controllers_path,
         ],
-        parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time_for_control")}],
     )
 
     delayed_joint_state_spawner = TimerAction(
@@ -217,12 +218,12 @@ def generate_launch_description():
     )
 
     delayed_arm_spawner = TimerAction(
-        period=LaunchConfiguration("controller_spawn_delay"),
+        period=PythonExpression([LaunchConfiguration("controller_spawn_delay"), " + 2.0"]),
         actions=[arm_controller_spawner],
     )
 
     delayed_hand_spawner = TimerAction(
-        period=LaunchConfiguration("controller_spawn_delay"),
+        period=PythonExpression([LaunchConfiguration("controller_spawn_delay"), " + 4.0"]),
         actions=[hand_controller_spawner],
     )
 

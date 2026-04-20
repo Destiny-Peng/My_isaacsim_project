@@ -22,6 +22,7 @@ def generate_launch_description():
     enable_initial_open_hand_stage = LaunchConfiguration("enable_initial_open_hand_stage")
     enable_move_to_pick_stage = LaunchConfiguration("enable_move_to_pick_stage")
     enable_move_to_place_stage = LaunchConfiguration("enable_move_to_place_stage")
+    execute = LaunchConfiguration("execute")
     spawn_aux_controllers = LaunchConfiguration("spawn_aux_controllers")
     launch_mtc_rviz = LaunchConfiguration("launch_mtc_rviz")
     mtc_rviz_config = LaunchConfiguration("mtc_rviz_config")
@@ -96,6 +97,7 @@ def generate_launch_description():
                 "enable_initial_open_hand_stage": enable_initial_open_hand_stage,
                 "enable_move_to_pick_stage": enable_move_to_pick_stage,
                 "enable_move_to_place_stage": enable_move_to_place_stage,
+                "execute": execute,
             },
         ],
     )
@@ -137,6 +139,7 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_initial_open_hand_stage", default_value="false"),
             DeclareLaunchArgument("enable_move_to_pick_stage", default_value="true"),
             DeclareLaunchArgument("enable_move_to_place_stage", default_value="true"),
+            DeclareLaunchArgument("execute", default_value="true"),
             DeclareLaunchArgument("spawn_aux_controllers", default_value="true"),
             DeclareLaunchArgument("launch_mtc_rviz", default_value="true"),
             DeclareLaunchArgument(

@@ -81,6 +81,53 @@ It is intended for future agents to quickly resume work without re-discovery.
    - Root cause identified: `mtc::Task` was a local variable inside `run()` and got destroyed when `run()` returned.
    - Refactored `mtc_pick_place_demo.cpp` to store task as class member (`std::unique_ptr<mtc::Task> task_`).
    - This preserves full task tree and candidate solutions in RViz after successful plan, matching official demo behavior.
+14. Execute path implementation + control wiring (new)
+   - Enabled real execute branch in `mtc_pick_place_demo.cpp` after successful plan and published solution.
+   - Added `execute` parameter (default false in code) to explicitly control whether execution is attempted.
+   - Added `keep_alive_after_execute_failure` parameter (default true) to preserve RViz introspection context on execute failure.
+   - Added error-code logging for execute result with readable MoveIt error text.
+   - Wired execute control through launch and default YAML:
+      - `launch/mtc_pick_place_demo.launch.py` now declares/passes `execute`.
+      - `config/mtc_launch_defaults.yaml` now includes `launch.execute`.
+      - `config/pick_place_params.yaml` now includes `execute` and `keep_alive_after_execute_failure`.
+15. Execute server + controller chain debug hardening (new)
+   - Added `move_group/ExecuteTaskSolutionCapability` to `moveit_robot_config/launch/isaac_sim_moveit.launch.py` move_group parameters.
+   - Verified in runtime logs that MoveGroup loads `ExecuteTaskSolutionCapability` and exposes `ExecuteTaskSolution` capability.
+   - Reworked controller bring-up path in `isaac_sim_moveit.launch.py`:
+      - replaced fragile Node-spawner path with explicit controller activation commands via `ros2 control ... --set-state active` fallback.
+   - Updated sim-time control defaults for execution consistency:
+      - `moveit_mtc_pick_place_demo/config/mtc_launch_defaults.yaml`: `use_sim_time_for_control=true`
+      - `moveit_robot_config/config/isaac_sim_moveit_defaults.yaml`: `use_sim_time_for_control=true`
+   - Current diagnosis status:
+      - execute server missing issue is resolved;
+      - remaining runtime stabilization is focused on controller acceptance/trajectory execution behavior under the active simulation session.
+16. Execute precheck hardening for controller action readiness (latest)
+   - Added execute-time precheck in `mtc_pick_place_demo.cpp` to wait for both action servers before calling `task.execute(...)`:
+      - `arm_controller/follow_joint_trajectory`
+      - `hand_controller/gripper_cmd`
+   - Added new parameters:
+      - `wait_for_execution_action_servers` (default: true)
+      - `execute_action_server_wait_timeout_sec` (default: 20.0)
+      - `arm_controller_action_name`
+      - `hand_controller_action_name`
+   - On precheck timeout/failure, execution is skipped with explicit logs, and node stays alive when `keep_alive_after_execute_failure=true`.
+   - Added package deps for new action-client code path:
+      - `rclcpp_action`, `control_msgs`, `sensor_msgs`.
+17. 2026-04-20 end-to-end execute stabilization (latest)
+   - `isaac_sim_moveit.launch.py` controller bring-up improved by staggered spawner delays (joint_state -> arm -> hand) to reduce service contention.
+   - `mtc_pick_place_demo.cpp` restored runtime gating for stage toggles:
+      - `enable_initial_open_hand_stage`
+      - `enable_gripper_actions`
+      - `enable_move_to_pick_stage`
+      - `enable_move_to_place_stage`
+   - Fixed `GenerateGraspPose` monitored-stage regression when initial open-hand stage is disabled.
+   - Added explicit trajectory controller binding in MTC stages via `TrajectoryExecutionInfo`:
+      - arm stages -> `arm_controller`
+      - hand stages -> `hand_controller`
+   - Added timestamp sanitization in `moveit_task_constructor` ExecuteTaskSolution capability:
+      - non-increasing `JointTrajectory` `time_from_start` values are adjusted to strictly increasing with a small minimum delta before execution.
+   - Fresh-stack validation result:
+      - full IsaacSim + MoveIt + MTC run reached `MTC pick and place execution completed successfully`.
 
 ### In Progress
 
@@ -157,6 +204,14 @@ It is intended for future agents to quickly resume work without re-discovery.
    - User observed that despite planning completion, RViz final task appeared red and stage alternatives were not browsable.
    - Follow-up patch applied: task object lifetime extended beyond `run()` scope (member-owned task).
    - Execute path remains untouched by request; this round only addresses planning visualization continuity.
+21. 2026-04-20 execute implementation update (new):
+   - User requested moving to execute track after RViz planning visualization was confirmed correct.
+   - Execute branch has been enabled with runtime switch and failure-keep-alive behavior for debugging.
+   - Lifecycle and introspection continuity remain unchanged from previous fix (spin + join, member-owned task).
+22. 2026-04-20 execute-server follow-up (new):
+   - User-reported execute failure root cause narrowed from “no execute server” to “controller-side goal rejection”.
+   - Launch chain now includes official `ExecuteTaskSolutionCapability` equivalent and controller activation hardening.
+   - Next verification is to run full IsaacSim+MTC session and confirm trajectory acceptance end-to-end with updated defaults.
 
 ### Expected Next Steps
 
@@ -331,6 +386,8 @@ Define a practical execute implementation plan that does not regress the newly r
    - Use C parameter hierarchy as acceptance contract for launch/YAML/CLI behavior.
 
 4. Action items
-   - [ ] Add execute policy parameters to `mtc_pick_place_demo.cpp` and default YAML.
-   - [ ] Implement execute branch with failure-tolerant keep-alive behavior.
+   - [x] Add execute policy parameters to `mtc_pick_place_demo.cpp` and default YAML.
+   - [x] Implement execute branch with failure-tolerant keep-alive behavior.
+   - [x] Add ExecuteTaskSolutionCapability to project move_group launch.
+   - [x] Harden controller activation path for execute stage.
    - [ ] Add runbook-level acceptance checklist (execute on/off + fail path + Ctrl+C).

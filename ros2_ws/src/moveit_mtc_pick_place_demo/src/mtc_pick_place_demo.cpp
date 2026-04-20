@@ -1,5 +1,8 @@
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 
+#include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <control_msgs/action/gripper_command.hpp>
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
@@ -11,6 +14,7 @@
 #include <moveit/task_constructor/stages.h>
 #include <moveit/task_constructor/task.h>
 #include <moveit_msgs/msg/collision_object.hpp>
+#include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <tf2/LinearMath/Quaternion.h>
@@ -39,6 +43,29 @@ namespace
         }
         return transform;
     }
+
+    const char *moveItErrorCodeToString(int code)
+    {
+        switch (code)
+        {
+        case moveit_msgs::msg::MoveItErrorCodes::SUCCESS:
+            return "SUCCESS";
+        case moveit_msgs::msg::MoveItErrorCodes::FAILURE:
+            return "FAILURE";
+        case moveit_msgs::msg::MoveItErrorCodes::PLANNING_FAILED:
+            return "PLANNING_FAILED";
+        case moveit_msgs::msg::MoveItErrorCodes::MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE:
+            return "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE";
+        case moveit_msgs::msg::MoveItErrorCodes::CONTROL_FAILED:
+            return "CONTROL_FAILED";
+        case moveit_msgs::msg::MoveItErrorCodes::TIMED_OUT:
+            return "TIMED_OUT";
+        case moveit_msgs::msg::MoveItErrorCodes::PREEMPTED:
+            return "PREEMPTED";
+        default:
+            return "UNKNOWN";
+        }
+    }
 } // namespace
 
 class MTCPickPlaceDemo : public rclcpp::Node
@@ -63,6 +90,15 @@ public:
         enable_forbid_hand_object_collision_after_place_ =
             this->declare_parameter<bool>("enable_forbid_hand_object_collision_after_place", true);
         enable_move_home_stage_ = this->declare_parameter<bool>("enable_move_home_stage", true);
+        execute_ = this->declare_parameter<bool>("execute", false);
+        keep_alive_after_execute_failure_ = this->declare_parameter<bool>("keep_alive_after_execute_failure", true);
+        wait_for_execution_action_servers_ = this->declare_parameter<bool>("wait_for_execution_action_servers", true);
+        execute_action_server_wait_timeout_sec_ =
+            this->declare_parameter<double>("execute_action_server_wait_timeout_sec", 20.0);
+        arm_controller_action_name_ =
+            this->declare_parameter<std::string>("arm_controller_action_name", "arm_controller/follow_joint_trajectory");
+        hand_controller_action_name_ =
+            this->declare_parameter<std::string>("hand_controller_action_name", "hand_controller/gripper_cmd");
         max_solutions_ = this->declare_parameter<int>("max_solutions", 4);
         task_timeout_sec_ = this->declare_parameter<double>("task_timeout_sec", 60.0);
 
@@ -153,6 +189,11 @@ public:
             task.setTimeout(task_timeout_sec_);
         }
 
+        mtc::TrajectoryExecutionInfo arm_exec_info;
+        arm_exec_info.controller_names = {"arm_controller"};
+        mtc::TrajectoryExecutionInfo hand_exec_info;
+        hand_exec_info.controller_names = {"hand_controller"};
+
         mtc::Stage *initial_state_ptr = nullptr;
         {
             auto current_state = std::make_unique<mtc::stages::CurrentState>("current state");
@@ -168,22 +209,27 @@ public:
                     }
                     return true;
                 });
+            initial_state_ptr = applicability_filter.get();
             task.add(std::move(applicability_filter));
         }
 
+        if (enable_initial_open_hand_stage_)
         {
             auto stage = std::make_unique<mtc::stages::MoveTo>("open hand", sampling_planner);
             stage->setGroup(hand_group_);
             stage->setGoal(pregrasp_);
+            stage->setTrajectoryExecutionInfo(hand_exec_info);
             initial_state_ptr = stage.get();
             task.add(std::move(stage));
         }
 
+        if (enable_move_to_pick_stage_)
         {
             auto stage = std::make_unique<mtc::stages::Connect>(
                 "move to pick", mtc::stages::Connect::GroupPlannerVector{{arm_group_, sampling_planner}});
             stage->setTimeout(15.0);
             stage->properties().configureInitFrom(mtc::Stage::PARENT);
+            stage->setTrajectoryExecutionInfo(arm_exec_info);
             task.add(std::move(stage));
         }
         /****************************************************
@@ -211,6 +257,7 @@ public:
                 vec.header.frame_id = hand_frame_;
                 vec.vector.x = -1.0;
                 stage->setDirection(vec);
+                stage->setTrajectoryExecutionInfo(arm_exec_info);
                 grasp->insert(std::move(stage));
             }
             /****************************************************
@@ -265,10 +312,12 @@ public:
             /****************************************************
       ---- *               Close Hand                      *
              ***************************************************/
+            if (enable_gripper_actions_)
             {
                 auto stage = std::make_unique<mtc::stages::MoveTo>("close hand", sampling_planner);
                 stage->setGroup(hand_group_);
                 stage->setGoal(grasp_);
+                stage->setTrajectoryExecutionInfo(hand_exec_info);
                 grasp->insert(std::move(stage));
             }
             /****************************************************
@@ -302,6 +351,7 @@ public:
                 vec.header.frame_id = world_frame_;
                 vec.vector.z = 1.0;
                 stage->setDirection(vec);
+                stage->setTrajectoryExecutionInfo(arm_exec_info);
                 grasp->insert(std::move(stage));
             }
             /****************************************************
@@ -318,14 +368,17 @@ public:
             task.add(std::move(grasp));
         }
 
+        if (enable_move_to_place_stage_)
         {
             auto stage = std::make_unique<mtc::stages::Connect>(
                 "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_, sampling_planner}});
             stage->setTimeout(5.0);
             stage->properties().configureInitFrom(mtc::Stage::PARENT);
+            stage->setTrajectoryExecutionInfo(arm_exec_info);
             task.add(std::move(stage));
         }
 
+        if (enable_move_to_place_stage_)
         {
             auto place = std::make_unique<mtc::SerialContainer>("place object");
             task.properties().exposeTo(place->properties(), {"eef", "hand", "group", "ik_frame"});
@@ -343,6 +396,7 @@ public:
                 vec.header.frame_id = world_frame_;
                 vec.vector.z = -1.0;
                 stage->setDirection(vec);
+                stage->setTrajectoryExecutionInfo(arm_exec_info);
                 place->insert(std::move(stage));
             }
 
@@ -374,10 +428,12 @@ public:
                 place->insert(std::move(wrapper));
             }
 
+            if (enable_gripper_actions_)
             {
                 auto stage = std::make_unique<mtc::stages::MoveTo>("open hand", sampling_planner);
                 stage->setGroup(hand_group_);
                 stage->setGoal(pregrasp_);
+                stage->setTrajectoryExecutionInfo(hand_exec_info);
                 place->insert(std::move(stage));
             }
 
@@ -393,6 +449,7 @@ public:
                 stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
                 stage->setGroup(arm_group_);
                 stage->setGoal("ready");
+                stage->setTrajectoryExecutionInfo(arm_exec_info);
                 place->insert(std::move(stage));
             }
 
@@ -412,6 +469,7 @@ public:
             stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
             stage->setGoal("ready");
             stage->restrictDirection(mtc::stages::MoveTo::FORWARD);
+            stage->setTrajectoryExecutionInfo(arm_exec_info);
             task.add(std::move(stage));
         }
 
@@ -438,17 +496,96 @@ public:
         task.introspection().publishSolution(*solution);
         RCLCPP_INFO(this->get_logger(), "Published best solution to MTC introspection topics");
 
-        // const auto result = task.execute(*solution);
-        // if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
-        // {
-        //     RCLCPP_ERROR(this->get_logger(), "Task execution failed with code: %d", result.val);
-        //     return;
-        // }
+        if (!execute_)
+        {
+            RCLCPP_INFO(this->get_logger(), "Execution disabled (`execute=false`); keeping node alive for RViz introspection");
+            return;
+        }
 
-        // RCLCPP_INFO(this->get_logger(), "MTC pick and place completed successfully");
+        RCLCPP_INFO(this->get_logger(), "Starting task execution");
+        if (wait_for_execution_action_servers_ && !waitForExecutionActionServers())
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Execution action servers are not ready. Skipping execute to avoid immediate CONTROL_FAILED.");
+            if (keep_alive_after_execute_failure_)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "Keeping node alive after execute precheck failure for RViz analysis");
+            }
+            return;
+        }
+
+        const auto result = task.execute(*solution);
+        if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Task execution failed: code=%d (%s)",
+                         result.val,
+                         moveItErrorCodeToString(result.val));
+            if (keep_alive_after_execute_failure_)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "Keeping node alive after execute failure for RViz analysis (`keep_alive_after_execute_failure=true`)");
+            }
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "MTC pick and place execution completed successfully");
     }
 
 private:
+    bool waitForExecutionActionServers()
+    {
+        if (execute_action_server_wait_timeout_sec_ <= 0.0)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "Skipping execution action server wait because execute_action_server_wait_timeout_sec<=0");
+            return true;
+        }
+
+        const auto timeout = std::chrono::duration<double>(execute_action_server_wait_timeout_sec_);
+        const auto arm_ok = waitForActionServer<control_msgs::action::FollowJointTrajectory>(
+            arm_controller_action_name_,
+            timeout,
+            "arm_controller");
+        const auto hand_ok = waitForActionServer<control_msgs::action::GripperCommand>(
+            hand_controller_action_name_,
+            timeout,
+            "hand_controller");
+        return arm_ok && hand_ok;
+    }
+
+    template <typename ActionT>
+    bool waitForActionServer(const std::string &action_name,
+                             const std::chrono::duration<double> &timeout,
+                             const char *label)
+    {
+        if (action_name.empty())
+        {
+            RCLCPP_ERROR(this->get_logger(), "Action name for %s is empty", label);
+            return false;
+        }
+
+        auto client = rclcpp_action::create_client<ActionT>(shared_from_this(), action_name);
+        RCLCPP_INFO(this->get_logger(),
+                    "Waiting up to %.1f s for %s action server: %s",
+                    timeout.count(),
+                    label,
+                    action_name.c_str());
+
+        if (!client->wait_for_action_server(timeout))
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Timed out waiting for %s action server: %s",
+                         label,
+                         action_name.c_str());
+            return false;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "%s action server is ready: %s", label, action_name.c_str());
+        return true;
+    }
+
     bool waitForJointState()
     {
         if (joint_state_received_)
@@ -528,6 +665,12 @@ private:
     bool enable_retreat_after_place_stage_{};
     bool enable_forbid_hand_object_collision_after_place_{};
     bool enable_move_home_stage_{};
+    bool execute_{};
+    bool keep_alive_after_execute_failure_{};
+    bool wait_for_execution_action_servers_{};
+    double execute_action_server_wait_timeout_sec_{};
+    std::string arm_controller_action_name_;
+    std::string hand_controller_action_name_;
     int max_solutions_{};
     double task_timeout_sec_{};
 

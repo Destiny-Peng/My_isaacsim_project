@@ -4,10 +4,11 @@ launch:
   controller_spawn_delay: 5.0
   controller_manager_timeout: 60.0
   mtc_start_delay: 8.0
-  enable_gripper_actions: false
-  enable_initial_open_hand_stage: false
+  enable_gripper_actions: true
+  enable_initial_open_hand_stage: true
   enable_move_to_pick_stage: true
   enable_move_to_place_stage: true
+  execute: true
   spawn_aux_controllers: true
   launch_mtc_rviz: true
 
