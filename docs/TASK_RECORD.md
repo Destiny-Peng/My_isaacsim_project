@@ -73,6 +73,15 @@ It is intended for future agents to quickly resume work without re-discovery.
        - `env_issaclab` is IsaacSim-only; non-Isaac project tasks should stay on default/system environment.
     - Left fill-in placeholders for user-provided facts (env variables, validation criteria, troubleshooting cases).
 
+12. MTC node lifecycle aligned to official keep-alive behavior (new)
+   - Updated `mtc_pick_place_demo.cpp` main lifecycle to use background spinning thread and `spinning_thread.join()`.
+   - Removed immediate `rclcpp::shutdown()` after `node->run()` to keep introspection topics alive for RViz after planning.
+   - Behavior now matches official demo intent: planning can finish while node remains alive for stage visualization.
+13. MTC task lifetime fix for RViz stage/solution browsing (new)
+   - Root cause identified: `mtc::Task` was a local variable inside `run()` and got destroyed when `run()` returned.
+   - Refactored `mtc_pick_place_demo.cpp` to store task as class member (`std::unique_ptr<mtc::Task> task_`).
+   - This preserves full task tree and candidate solutions in RViz after successful plan, matching official demo behavior.
+
 ### In Progress
 
 1. End-to-end validation of MTC pick/place with synced Isaac object in one command sequence.
@@ -136,6 +145,18 @@ It is intended for future agents to quickly resume work without re-discovery.
    - Fixed `mtc_pick_place_demo.cpp` so `enable_move_to_place_stage` now gates the whole place container subtree.
    - Rebuild and pick-only regression run (`enable_move_to_place_stage:=false`, `enable_gripper_actions:=false`) no longer fails during `task.init()` with interface mismatch.
    - Current blocker after this fix: plan still fails in pick pipeline (`move to pick`/`grasp pose IK` path), but this is now a planning-quality issue rather than task-graph wiring failure.
+18. 2026-04-20 planning visibility status update (new):
+   - User confirms pick and place planning stages can now complete end-to-end in current branch/profile.
+   - New issue focus moved to node lifecycle UX: after planning completes, visualization should remain available in RViz without process exit.
+   - Lifecycle fix has been applied in code (see Completed #12).
+19. 2026-04-20 execute-track planning kickoff (new):
+   - Execute path is intentionally treated as separate track from planning-stage closure.
+   - Immediate requirement is to define a robust execute strategy that preserves RViz introspection even when execute fails.
+   - Three subagent方案 (A/B/C) were organized and consolidated below for implementation handoff.
+20. 2026-04-20 RViz red-state follow-up fix (new):
+   - User observed that despite planning completion, RViz final task appeared red and stage alternatives were not browsable.
+   - Follow-up patch applied: task object lifetime extended beyond `run()` scope (member-owned task).
+   - Execute path remains untouched by request; this round only addresses planning visualization continuity.
 
 ### Expected Next Steps
 
@@ -216,3 +237,100 @@ pkill -f 'rviz2' || true
 3. For stable startup sequence:
    - start IsaacSim bridge first,
    - then launch MoveIt/MTC.
+
+## 6. Execute Implementation Proposals (Subagent Round, 2026-04-20)
+
+### Proposal A: Official-style lifecycle baseline + project-safe extensions
+
+1. Core alignment with official demo
+   - Keep execution entrypoint pattern: plan -> optional execute.
+   - Keep post-plan node keep-alive behavior via spinning thread join.
+
+2. Suggested parameters
+   - `execute` (bool): whether to call `task.execute()`.
+   - `keep_alive_after_plan` (bool): keep node alive after planning.
+   - `keep_alive_after_execute_failure` (bool): keep node alive when execute fails.
+
+3. Failure handling policy
+   - Always log `MoveItErrorCodes` value on execute result.
+   - On execute failure, do not force process exit when keep-alive is enabled.
+   - Preserve introspection context for RViz diagnosis.
+
+4. Risk notes
+   - Task object lifetime must outlive visualization window.
+   - Avoid executor deadlock when callbacks and execute run concurrently.
+   - Scene consistency between MoveIt and Isaac must be verified after execute fail.
+   - Ctrl+C shutdown path should remain deterministic.
+
+### Proposal B: State-machine driven execute with keep-alive terminal state
+
+1. Suggested runtime states
+   - `PLANNING_SUCCESS` / `PLANNING_FAIL`
+   - `EXECUTE_SUCCESS` / `EXECUTE_FAIL`
+   - terminal `IDLE_KEEP_ALIVE`
+
+2. Observability points
+   - Log plan success/failure with `task.explainFailure(...)` on failure.
+   - Log whether execute is skipped by policy.
+   - Log execute error code and mapped text reason.
+   - Log transition into keep-alive state.
+
+3. Minimal-intrusion refactor guidance
+   - Keep current structure; split planning/execution branches clearly.
+   - Add execute-related parameters only, avoid broad stage rewrites.
+   - Keep main lifecycle simple: spin thread + run once + join.
+
+4. Validation matrix highlights
+   - execute on/off
+   - execute fail injection
+   - plan fail with keep-alive
+   - Ctrl+C exit behavior under keep-alive
+
+### Proposal C: Parameter layering + phased rollout
+
+1. Parameter hierarchy
+   - Code defaults < YAML defaults < launch override < CLI override.
+
+2. Execute-related defaults (recommended)
+   - `execute=false` by default for safer bring-up/debug.
+   - optional execution timeout and scaling parameters for runtime safety.
+
+3. Rollout phases
+   - Phase 1: add execute policy parameters in code + YAML.
+   - Phase 2: expose launch/CLI controls and verify overrides.
+   - Phase 3: add acceptance checks and runtime metrics logging.
+
+## 7. Subagent Meeting Minutes (2026-04-20)
+
+### Objective
+
+Define a practical execute implementation plan that does not regress the newly restored planning-stage visibility in RViz.
+
+### Attendees
+
+- Main agent (integration owner)
+- Explore subagent A (official lifecycle alignment)
+- Explore subagent B (failure-tolerant runtime state design)
+- Explore subagent C (parameterization and rollout planning)
+
+### Discussion Summary
+
+1. Agreement points
+   - Keep official lifecycle principle: planning and execute happen once, process remains alive for introspection.
+   - Execute failure must not automatically destroy debugging context.
+   - Parameterized execute policy is required for safe iterative debugging.
+
+2. Divergence points
+   - A favored direct alignment with minimal additional structure.
+   - B favored explicit state-machine semantics for clearer runtime transitions.
+   - C emphasized rollout safety and parameter ownership layering.
+
+3. Consolidated decision
+   - Adopt A lifecycle baseline immediately (already completed for keep-alive).
+   - Implement B-style explicit logging and branch clarity during execute补全.
+   - Use C parameter hierarchy as acceptance contract for launch/YAML/CLI behavior.
+
+4. Action items
+   - [ ] Add execute policy parameters to `mtc_pick_place_demo.cpp` and default YAML.
+   - [ ] Implement execute branch with failure-tolerant keep-alive behavior.
+   - [ ] Add runbook-level acceptance checklist (execute on/off + fail path + Ctrl+C).

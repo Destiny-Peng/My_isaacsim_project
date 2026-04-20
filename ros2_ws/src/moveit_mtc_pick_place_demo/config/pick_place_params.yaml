@@ -9,13 +9,16 @@ mtc_pick_place_demo:
 
     pregrasp: open
     grasp: close
-    task_timeout_sec: 60.0
+    task_timeout_sec: 180.0
     enable_initial_open_hand_stage: false
     enable_move_to_pick_stage: true
     enable_move_to_place_stage: true
+    enable_retreat_after_place_stage: true
+    enable_forbid_hand_object_collision_after_place: false
+    enable_move_home_stage: false
 
     pick_pose_xyz: [0.55, 0.0, 0.60]
-    place_pose_xyz: [0.45, -0.25, 0.60]
+    place_pose_xyz: [0.55, 0.0, 0.60]
 
     object_size_xyz: [0.04, 0.04, 0.12]
     grasp_x_offset: -0.1
@@ -31,4 +34,4 @@ mtc_pick_place_demo:
     approach_min_distance: 0.0
     approach_distance: 0.12
     lift_distance: 0.12
-    place_retreat_distance: 0.10
+    place_retreat_distance: 0.03

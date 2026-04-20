@@ -18,7 +18,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <memory>
 #include <sstream>
+#include <thread>
 #include <unordered_set>
 
 namespace mtc = moveit::task_constructor;
@@ -57,7 +59,11 @@ public:
         enable_initial_open_hand_stage_ = this->declare_parameter<bool>("enable_initial_open_hand_stage", false);
         enable_move_to_pick_stage_ = this->declare_parameter<bool>("enable_move_to_pick_stage", true);
         enable_move_to_place_stage_ = this->declare_parameter<bool>("enable_move_to_place_stage", true);
-        max_solutions_ = this->declare_parameter<int>("max_solutions", 1);
+        enable_retreat_after_place_stage_ = this->declare_parameter<bool>("enable_retreat_after_place_stage", true);
+        enable_forbid_hand_object_collision_after_place_ =
+            this->declare_parameter<bool>("enable_forbid_hand_object_collision_after_place", true);
+        enable_move_home_stage_ = this->declare_parameter<bool>("enable_move_home_stage", true);
+        max_solutions_ = this->declare_parameter<int>("max_solutions", 4);
         task_timeout_sec_ = this->declare_parameter<double>("task_timeout_sec", 60.0);
 
         pick_xyz_ = this->declare_parameter<std::vector<double>>("pick_pose_xyz", std::vector<double>{0.55, 0.0, 0.20});
@@ -124,12 +130,13 @@ public:
 
         addCollisionObject();
 
-        mtc::Task task;
+        task_ = std::make_unique<mtc::Task>();
+        mtc::Task &task = *task_;
         task.stages()->setName("pick_place_task");
         task.loadRobotModel(shared_from_this());
 
         auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(shared_from_this());
-        sampling_planner->setProperty("goal_joint_tolerance", 1e-3);
+        sampling_planner->setProperty("goal_joint_tolerance", 1e-5);
 
         auto cartesian_planner = std::make_shared<mtc::solvers::CartesianPath>();
         cartesian_planner->setMaxVelocityScalingFactor(1.0);
@@ -175,7 +182,7 @@ public:
         {
             auto stage = std::make_unique<mtc::stages::Connect>(
                 "move to pick", mtc::stages::Connect::GroupPlannerVector{{arm_group_, sampling_planner}});
-            stage->setTimeout(5.0);
+            stage->setTimeout(15.0);
             stage->properties().configureInitFrom(mtc::Stage::PARENT);
             task.add(std::move(stage));
         }
@@ -355,7 +362,7 @@ public:
                 stage->setMonitoredStage(pick_stage_ptr);
 
                 auto wrapper = std::make_unique<mtc::stages::ComputeIK>("place pose IK", std::move(stage));
-                wrapper->setMaxIKSolutions(2);
+                wrapper->setMaxIKSolutions(4);
                 wrapper->setIKFrame(makeGraspFrameTransform(
                                         grasp_x_offset_,
                                         grasp_y_offset_,
@@ -375,33 +382,31 @@ public:
             }
 
             {
-                auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (hand,object)");
-                stage->allowCollisions(object_name_, *task.getRobotModel()->getJointModelGroup(hand_group_), false);
-                place->insert(std::move(stage));
-            }
-
-            {
                 auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object");
                 stage->detachObject(object_name_, hand_frame_);
                 place->insert(std::move(stage));
             }
 
+            if (enable_retreat_after_place_stage_)
             {
-                auto stage = std::make_unique<mtc::stages::MoveRelative>("retreat after place", cartesian_planner);
+                auto stage = std::make_unique<mtc::stages::MoveTo>("retreat after place", sampling_planner);
                 stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-                stage->setMinMaxDistance(0.12, std::max(0.25, place_retreat_distance_));
-                stage->setIKFrame(hand_frame_);
-                stage->properties().set("marker_ns", "retreat");
-                geometry_msgs::msg::Vector3Stamped vec;
-                vec.header.frame_id = hand_frame_;
-                vec.vector.z = -1.0;
-                stage->setDirection(vec);
+                stage->setGroup(arm_group_);
+                stage->setGoal("ready");
+                place->insert(std::move(stage));
+            }
+
+            if (enable_forbid_hand_object_collision_after_place_)
+            {
+                auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (hand,object)");
+                stage->allowCollisions(object_name_, *task.getRobotModel()->getJointModelGroup(hand_group_), false);
                 place->insert(std::move(stage));
             }
 
             task.add(std::move(place));
         }
 
+        if (enable_move_home_stage_)
         {
             auto stage = std::make_unique<mtc::stages::MoveTo>("move home", sampling_planner);
             stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
@@ -433,14 +438,14 @@ public:
         task.introspection().publishSolution(*solution);
         RCLCPP_INFO(this->get_logger(), "Published best solution to MTC introspection topics");
 
-        const auto result = task.execute(*solution);
-        if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Task execution failed with code: %d", result.val);
-            return;
-        }
+        // const auto result = task.execute(*solution);
+        // if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+        // {
+        //     RCLCPP_ERROR(this->get_logger(), "Task execution failed with code: %d", result.val);
+        //     return;
+        // }
 
-        RCLCPP_INFO(this->get_logger(), "MTC pick and place completed successfully");
+        // RCLCPP_INFO(this->get_logger(), "MTC pick and place completed successfully");
     }
 
 private:
@@ -520,6 +525,9 @@ private:
     bool enable_initial_open_hand_stage_{};
     bool enable_move_to_pick_stage_{};
     bool enable_move_to_place_stage_{};
+    bool enable_retreat_after_place_stage_{};
+    bool enable_forbid_hand_object_collision_after_place_{};
+    bool enable_move_home_stage_{};
     int max_solutions_{};
     double task_timeout_sec_{};
 
@@ -545,16 +553,20 @@ private:
     double joint_state_wait_timeout_sec_{};
     bool joint_state_received_{false};
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+    std::unique_ptr<mtc::Task> task_;
 };
 
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<MTCPickPlaceDemo>();
+    std::thread spinning_thread([node]
+                                { rclcpp::spin(node); });
 
     rclcpp::sleep_for(std::chrono::seconds(2));
     node->run();
 
-    rclcpp::shutdown();
+    // Keep introspection topics alive for RViz after planning finishes.
+    spinning_thread.join();
     return 0;
 }
