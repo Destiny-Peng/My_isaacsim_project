@@ -1,8 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
 
-#include <control_msgs/action/follow_joint_trajectory.hpp>
-#include <control_msgs/action/gripper_command.hpp>
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
@@ -24,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -69,6 +67,22 @@ namespace
             return "UNKNOWN";
         }
     }
+
+    bool vectorsApproxEqual(const std::vector<double> &a, const std::vector<double> &b, double eps = 1e-6)
+    {
+        if (a.size() != b.size())
+        {
+            return false;
+        }
+        for (size_t i = 0; i < a.size(); ++i)
+        {
+            if (std::fabs(a[i] - b[i]) > eps)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 } // namespace
 
 class MTCPickPlaceDemo : public rclcpp::Node
@@ -86,14 +100,6 @@ public:
         pregrasp_ = this->declare_parameter<std::string>("pregrasp", "open");
         grasp_ = this->declare_parameter<std::string>("grasp", "close");
         execute_ = this->declare_parameter<bool>("execute", false);
-        keep_alive_after_execute_failure_ = this->declare_parameter<bool>("keep_alive_after_execute_failure", true);
-        wait_for_execution_action_servers_ = this->declare_parameter<bool>("wait_for_execution_action_servers", true);
-        execute_action_server_wait_timeout_sec_ =
-            this->declare_parameter<double>("execute_action_server_wait_timeout_sec", 20.0);
-        arm_controller_action_name_ = this->declare_parameter<std::string>(
-            "arm_controller_action_name", "arm_controller/follow_joint_trajectory");
-        hand_controller_action_name_ =
-            this->declare_parameter<std::string>("hand_controller_action_name", "hand_controller/gripper_cmd");
         max_solutions_ = this->declare_parameter<int>("max_solutions", 4);
         task_timeout_sec_ = this->declare_parameter<double>("task_timeout_sec", 60.0);
 
@@ -115,6 +121,11 @@ public:
         const double place_y = this->declare_parameter<double>("place_y", place_xyz_[1]);
         const double place_z = this->declare_parameter<double>("place_z", place_xyz_[2]);
         place_xyz_ = {place_x, place_y, place_z};
+
+        pick_pose_topic_ = this->declare_parameter<std::string>("pick_pose_topic", "");
+        place_pose_topic_ = this->declare_parameter<std::string>("place_pose_topic", "");
+        use_external_pick_pose_ = this->declare_parameter<bool>("use_external_pick_pose", true);
+        use_external_place_pose_ = this->declare_parameter<bool>("use_external_place_pose", true);
 
         const double object_size_x = this->declare_parameter<double>("object_size_x", object_size_xyz_[0]);
         const double object_size_y = this->declare_parameter<double>("object_size_y", object_size_xyz_[1]);
@@ -166,6 +177,48 @@ public:
                     joint_state_received_ = true;
                 }
             });
+
+        if (!pick_pose_topic_.empty())
+        {
+            pick_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+                pick_pose_topic_,
+                rclcpp::SystemDefaultsQoS(),
+                [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+                {
+                    if (!msg->header.frame_id.empty() && msg->header.frame_id != world_frame_)
+                    {
+                        RCLCPP_WARN(this->get_logger(),
+                                    "Ignore pick pose from frame '%s' (expected '%s')",
+                                    msg->header.frame_id.c_str(),
+                                    world_frame_.c_str());
+                        return;
+                    }
+                    std::lock_guard<std::mutex> lk(pose_override_mutex_);
+                    latest_pick_pose_xyz_ = {msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
+                    latest_pick_pose_received_ = true;
+                });
+        }
+
+        if (!place_pose_topic_.empty())
+        {
+            place_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+                place_pose_topic_,
+                rclcpp::SystemDefaultsQoS(),
+                [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+                {
+                    if (!msg->header.frame_id.empty() && msg->header.frame_id != world_frame_)
+                    {
+                        RCLCPP_WARN(this->get_logger(),
+                                    "Ignore place pose from frame '%s' (expected '%s')",
+                                    msg->header.frame_id.c_str(),
+                                    world_frame_.c_str());
+                        return;
+                    }
+                    std::lock_guard<std::mutex> lk(pose_override_mutex_);
+                    latest_place_pose_xyz_ = {msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
+                    latest_place_pose_received_ = true;
+                });
+        }
 
         run_task_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "run_task",
@@ -244,6 +297,14 @@ public:
             return false;
         }
 
+        if (refreshPickPlaceTargets())
+        {
+            resetCachedTaskState();
+            task_pipeline_initialized_ = false;
+            task_.reset();
+            RCLCPP_INFO(this->get_logger(), "Pick/place target updated, reset cached task and rebuild pipeline");
+        }
+
         if (!addCollisionObject())
         {
             return false;
@@ -293,17 +354,6 @@ public:
         }
 
         RCLCPP_INFO(this->get_logger(), "Starting task execution");
-        if (wait_for_execution_action_servers_ && !waitForExecutionActionServers())
-        {
-            RCLCPP_ERROR(this->get_logger(),
-                         "Execution action servers are not ready. Skipping execute to avoid immediate CONTROL_FAILED.");
-            if (keep_alive_after_execute_failure_)
-            {
-                RCLCPP_WARN(this->get_logger(), "Keeping node alive after execute precheck failure for RViz analysis");
-            }
-            return false;
-        }
-
         const auto result = task.execute(*solution_);
         if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
         {
@@ -311,11 +361,6 @@ public:
                          "Task execution failed: code=%d (%s)",
                          result.val,
                          moveItErrorCodeToString(result.val));
-            if (keep_alive_after_execute_failure_)
-            {
-                RCLCPP_WARN(this->get_logger(),
-                            "Keeping node alive after execute failure for RViz analysis (`keep_alive_after_execute_failure=true`)");
-            }
             return false;
         }
 
@@ -687,52 +732,46 @@ private:
         response->message = response->success ? "MTC task/planning-scene reset completed" : "MTC task/planning-scene reset failed";
     }
 
-    bool waitForExecutionActionServers()
+    bool refreshPickPlaceTargets()
     {
-        if (execute_action_server_wait_timeout_sec_ <= 0.0)
+        std::vector<double> configured_pick = pick_xyz_;
+        std::vector<double> configured_place = place_xyz_;
+        this->get_parameter("pick_pose_xyz", configured_pick);
+        this->get_parameter("place_pose_xyz", configured_place);
+
+        if (configured_pick.size() != 3 || configured_place.size() != 3)
         {
-            RCLCPP_WARN(this->get_logger(),
-                        "Skipping execution action server wait because execute_action_server_wait_timeout_sec<=0");
-            return true;
+            RCLCPP_WARN(this->get_logger(), "pick_pose_xyz/place_pose_xyz size invalid, keep last valid targets");
+            configured_pick = pick_xyz_;
+            configured_place = place_xyz_;
         }
 
-        const auto timeout = std::chrono::duration<double>(execute_action_server_wait_timeout_sec_);
-        const auto arm_ok = waitForActionServer<control_msgs::action::FollowJointTrajectory>(
-            arm_controller_action_name_, timeout, "arm_controller");
-        const auto hand_ok = waitForActionServer<control_msgs::action::GripperCommand>(
-            hand_controller_action_name_, timeout, "hand_controller");
-        return arm_ok && hand_ok;
-    }
+        std::vector<double> next_pick = configured_pick;
+        std::vector<double> next_place = configured_place;
 
-    template <typename ActionT>
-    bool waitForActionServer(const std::string &action_name,
-                             const std::chrono::duration<double> &timeout,
-                             const char *label)
-    {
-        if (action_name.empty())
         {
-            RCLCPP_ERROR(this->get_logger(), "Action name for %s is empty", label);
-            return false;
+            std::lock_guard<std::mutex> lk(pose_override_mutex_);
+            if (use_external_pick_pose_ && latest_pick_pose_received_ && latest_pick_pose_xyz_.size() == 3)
+            {
+                next_pick = latest_pick_pose_xyz_;
+            }
+            if (use_external_place_pose_ && latest_place_pose_received_ && latest_place_pose_xyz_.size() == 3)
+            {
+                next_place = latest_place_pose_xyz_;
+            }
         }
 
-        auto client = rclcpp_action::create_client<ActionT>(shared_from_this(), action_name);
-        RCLCPP_INFO(this->get_logger(),
-                    "Waiting up to %.1f s for %s action server: %s",
-                    timeout.count(),
-                    label,
-                    action_name.c_str());
-
-        if (!client->wait_for_action_server(timeout))
+        const bool changed = !vectorsApproxEqual(next_pick, pick_xyz_) || !vectorsApproxEqual(next_place, place_xyz_);
+        if (changed)
         {
-            RCLCPP_ERROR(this->get_logger(),
-                         "Timed out waiting for %s action server: %s",
-                         label,
-                         action_name.c_str());
-            return false;
+            pick_xyz_ = next_pick;
+            place_xyz_ = next_place;
+            RCLCPP_INFO(this->get_logger(),
+                        "Active pick/place targets updated: pick=(%.3f, %.3f, %.3f), place=(%.3f, %.3f, %.3f)",
+                        pick_xyz_[0], pick_xyz_[1], pick_xyz_[2],
+                        place_xyz_[0], place_xyz_[1], place_xyz_[2]);
         }
-
-        RCLCPP_INFO(this->get_logger(), "%s action server is ready: %s", label, action_name.c_str());
-        return true;
+        return changed;
     }
 
     bool waitForJointState()
@@ -870,11 +909,6 @@ private:
     std::string pregrasp_;
     std::string grasp_;
     bool execute_{};
-    bool keep_alive_after_execute_failure_{};
-    bool wait_for_execution_action_servers_{};
-    double execute_action_server_wait_timeout_sec_{};
-    std::string arm_controller_action_name_;
-    std::string hand_controller_action_name_;
     int max_solutions_{};
     double task_timeout_sec_{};
 
@@ -910,6 +944,17 @@ private:
     double joint_state_wait_timeout_sec_{};
     bool joint_state_received_{false};
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+    std::string pick_pose_topic_;
+    std::string place_pose_topic_;
+    bool use_external_pick_pose_{};
+    bool use_external_place_pose_{};
+    std::vector<double> latest_pick_pose_xyz_;
+    std::vector<double> latest_place_pose_xyz_;
+    bool latest_pick_pose_received_{false};
+    bool latest_place_pose_received_{false};
+    std::mutex pose_override_mutex_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pick_pose_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr place_pose_sub_;
     bool task_pipeline_initialized_{false};
     bool run_in_progress_{false};
     std::mutex run_mutex_;

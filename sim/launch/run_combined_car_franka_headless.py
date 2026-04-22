@@ -137,10 +137,16 @@ class _PythonRos2JointBridge:
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
+        clock_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
 
         self._node = rclpy.create_node(self.node_name)
         self._joint_state_pub = self._node.create_publisher(JointState, self.joint_state_topic, qos)
-        self._clock_pub = self._node.create_publisher(Clock, self.clock_topic, qos)
+        self._clock_pub = self._node.create_publisher(Clock, self.clock_topic, clock_qos)
         self._joint_cmd_sub = self._node.create_subscription(JointState, self.joint_cmd_topic, self._on_joint_cmd, qos)
         if self.on_reset_demo_cube is not None:
             self._reset_cube_srv = self._node.create_service(Trigger, "isaac/reset_demo_cube", self._on_reset_demo_cube)
@@ -562,6 +568,12 @@ def _load_param_file_defaults(param_file: str) -> dict:
         raise ValueError(f"Param file must contain a YAML mapping object: {file_path}")
 
     defaults = _flatten_config_dict(raw)
+    # Backward compatibility: older profiles may use `gui: true/false`.
+    # Canonical switch is `headless`, where gui=true maps to headless=false.
+    if "headless" not in defaults and "gui" in defaults:
+        defaults["headless"] = not bool(defaults["gui"])
+        print("[WARN] Param key `gui` is deprecated; please use `headless` instead.")
+    defaults.pop("gui", None)
     print(f"[INFO] Loaded parameter profile: {file_path}")
     return defaults
 
@@ -614,6 +626,31 @@ def _set_existing_prim_position(
         return False, f"failed to set {label} position: {prim_path}"
 
     return True, f"{label} position updated to {center_xyz} on {prim_path}"
+
+
+def _infer_sim_dt_from_stage(stage) -> float:
+    """Infer simulation dt from USD physics scene settings.
+
+    Falls back to 1/60 when the physics scene or fps metadata is unavailable.
+    """
+    try:
+        from pxr import UsdPhysics
+
+        for prim in stage.Traverse():
+            if not prim.IsValid():
+                continue
+            if prim.GetTypeName() != "PhysicsScene":
+                continue
+            scene_api = UsdPhysics.Scene(prim)
+            fps_attr = scene_api.GetTimeStepsPerSecondAttr()
+            if fps_attr.IsValid():
+                fps = float(fps_attr.Get())
+                if fps > 0.0:
+                    return 1.0 / fps
+    except Exception as exc:
+        print(f"[WARN] Failed to infer sim dt from stage physics scene: {exc}")
+
+    return 1.0 / 60.0
 
 
 def _get_prim_world_translation(stage, prim_path: str) -> np.ndarray | None:
@@ -766,12 +803,6 @@ def main() -> int:
         action="store_true",
         help="Create pure Python ROS2 bridge (/joint_commands, /joint_states, /clock) without OmniGraph",
     )
-    parser.add_argument(
-        "--articulation-prim",
-        type=str,
-        default="/mobile_base_with_franka",
-        help="Articulation prim path in stage",
-    )
     parser.add_argument("--joint-commands-topic", type=str, default="/joint_commands")
     parser.add_argument("--joint-states-topic", type=str, default="/joint_states")
     parser.add_argument("--clock-topic", type=str, default="/clock")
@@ -833,145 +864,9 @@ def main() -> int:
         help="Update existing demo object prim position only (no creation)",
     )
     parser.add_argument(
-        "--demo-object-prim",
-        type=str,
-        default="/Cube",
-        help="USD prim path for demo cube in Isaac Sim",
-    )
-    parser.add_argument(
-        "--demo-object-size",
-        type=str,
-        default="0.04,0.04,0.12",
-        help="Demo cube size xyz in meters",
-    )
-    parser.add_argument(
-        "--demo-object-pick-position",
-        type=str,
-        default="0.55,0.0,0.60",
-        help="Demo cube center xyz in world frame",
-    )
-    parser.add_argument(
-        "--demo-object-color",
-        type=str,
-        default="0.9,0.3,0.1",
-        help="Demo cube display color rgb in range [0,1]",
-    )
-    parser.add_argument(
         "--sync-demo-support-surface",
         action="store_true",
         help="Update existing support surface prim position only (no creation)",
-    )
-    parser.add_argument(
-        "--support-surface-prim",
-        type=str,
-        default="/Plane",
-        help="USD prim path for support surface in Isaac Sim",
-    )
-    parser.add_argument(
-        "--support-surface-size",
-        type=str,
-        default="0.8,0.8,0.04",
-        help="Support surface size xyz in meters",
-    )
-    parser.add_argument(
-        "--support-surface-center",
-        type=str,
-        default="0.55,0.0,0.49",
-        help="Support surface center xyz in world frame. Keep this aligned with MTC support_surface_xyz.",
-    )
-    parser.add_argument(
-        "--support-surface-color",
-        type=str,
-        default="0.65,0.62,0.56",
-        help="Support surface display color rgb in range [0,1]",
-    )
-    parser.add_argument(
-        "--demo-object-dynamic",
-        action="store_true",
-        help="Create demo cube as dynamic rigid body instead of static collider",
-    )
-    parser.add_argument(
-        "--demo-object-mass-kg",
-        type=float,
-        default=0.08,
-        help="Demo cube mass in kg when dynamic mode is enabled",
-    )
-    parser.add_argument(
-        "--demo-object-enable-ccd",
-        action="store_true",
-        help="Enable CCD on demo cube rigid body to reduce tunneling",
-    )
-    parser.add_argument(
-        "--demo-object-static-friction",
-        type=float,
-        default=1.2,
-        help="Demo cube static friction coefficient",
-    )
-    parser.add_argument(
-        "--demo-object-dynamic-friction",
-        type=float,
-        default=1.0,
-        help="Demo cube dynamic friction coefficient",
-    )
-    parser.add_argument(
-        "--demo-object-restitution",
-        type=float,
-        default=0.0,
-        help="Demo cube restitution coefficient",
-    )
-    parser.add_argument(
-        "--demo-object-linear-damping",
-        type=float,
-        default=1.0,
-        help="Demo cube linear damping for dynamic rigid body",
-    )
-    parser.add_argument(
-        "--demo-object-angular-damping",
-        type=float,
-        default=1.0,
-        help="Demo cube angular damping for dynamic rigid body",
-    )
-    parser.add_argument(
-        "--demo-object-contact-offset",
-        type=float,
-        default=0.005,
-        help="Demo cube collision contact offset (meters)",
-    )
-    parser.add_argument(
-        "--demo-object-rest-offset",
-        type=float,
-        default=0.0,
-        help="Demo cube collision rest offset (meters)",
-    )
-    parser.add_argument(
-        "--demo-object-solver-position-iterations",
-        type=int,
-        default=16,
-        help="Demo cube PhysX solver position iteration count",
-    )
-    parser.add_argument(
-        "--demo-object-solver-velocity-iterations",
-        type=int,
-        default=4,
-        help="Demo cube PhysX solver velocity iteration count",
-    )
-    parser.add_argument(
-        "--support-surface-static-friction",
-        type=float,
-        default=1.4,
-        help="Support surface static friction coefficient",
-    )
-    parser.add_argument(
-        "--support-surface-dynamic-friction",
-        type=float,
-        default=1.2,
-        help="Support surface dynamic friction coefficient",
-    )
-    parser.add_argument(
-        "--support-surface-restitution",
-        type=float,
-        default=0.0,
-        help="Support surface restitution coefficient",
     )
     parser.add_argument(
         "--initial-joint-positions-yaml",
@@ -983,6 +878,15 @@ def main() -> int:
         parser.set_defaults(**yaml_defaults)
 
     args = parser.parse_args()
+
+    def cfg(name: str, default):
+        return getattr(args, name, default)
+
+    articulation_prim = cfg("articulation_prim", "/mobile_base_with_franka")
+    demo_object_prim = cfg("demo_object_prim", "/Cube")
+    demo_object_pick_position = cfg("demo_object_pick_position", "0.55,0.0,0.60")
+    support_surface_prim = cfg("support_surface_prim", "/Plane")
+    support_surface_center = cfg("support_surface_center", "0.55,0.0,0.49")
 
     initial_joint_positions = _load_initial_joint_positions(args.initial_joint_positions_yaml)
 
@@ -1060,13 +964,15 @@ def main() -> int:
 
     prim_count = sum(1 for _ in stage.Traverse())
     print(f"[INFO] Stage loaded, prim count: {prim_count}")
+    sim_dt = _infer_sim_dt_from_stage(stage)
+    print(f"[INFO] Inferred simulation dt for /clock: {sim_dt:.6f} s")
 
     if args.sync_mtc_demo_object:
         try:
-            demo_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
+            demo_center = _parse_vec3(demo_object_pick_position, "demo_object_pick_position")
             ok, msg = _set_existing_prim_position(
                 stage=stage,
-                prim_path=args.demo_object_prim,
+                prim_path=demo_object_prim,
                 center_xyz=demo_center,
                 label="demo object",
             )
@@ -1080,10 +986,10 @@ def main() -> int:
 
     if args.sync_demo_support_surface:
         try:
-            table_center = _parse_vec3(args.support_surface_center, "--support-surface-center")
+            table_center = _parse_vec3(support_surface_center, "support_surface_center")
             ok, msg = _set_existing_prim_position(
                 stage=stage,
-                prim_path=args.support_surface_prim,
+                prim_path=support_surface_prim,
                 center_xyz=table_center,
                 label="support surface",
             )
@@ -1106,10 +1012,10 @@ def main() -> int:
 
     def reset_demo_cube_cb() -> tuple[bool, str]:
         try:
-            cube_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
+            cube_center = _parse_vec3(demo_object_pick_position, "demo_object_pick_position")
             ok, msg = _reset_demo_cube_transform_and_dynamics(
                 stage=stage,
-                prim_path=args.demo_object_prim,
+                prim_path=demo_object_prim,
                 center_xyz=cube_center,
             )
             return ok, msg
@@ -1126,7 +1032,7 @@ def main() -> int:
             app.update()
 
         python_bridge = _PythonRos2JointBridge(
-            articulation_prim=args.articulation_prim,
+            articulation_prim=articulation_prim,
             joint_cmd_topic=args.joint_commands_topic,
             joint_state_topic=args.joint_states_topic,
             clock_topic=args.clock_topic,
@@ -1145,7 +1051,7 @@ def main() -> int:
     for i in range(args.steps):
         app.update()
         if python_bridge is not None:
-            sim_time_s = timeline.get_current_time()
+            sim_time_s = i * sim_dt
             python_bridge.step(sim_time_s=sim_time_s, sim_step=i)
         if i % max(1, args.render_interval) == 0:
             print(f"[SIM] step={i}")

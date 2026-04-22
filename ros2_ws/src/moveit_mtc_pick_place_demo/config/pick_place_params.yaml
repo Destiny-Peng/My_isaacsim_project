@@ -11,8 +11,6 @@ mtc_pick_place_demo:
     grasp: close
     task_timeout_sec: 180.0
     execute: true
-    keep_alive_after_execute_failure: true
-    auto_run_on_start: true
 
     pick_pose_xyz: [0.55, 0.0, 0.60]
     place_pose_xyz: [0.55, 0.0, 0.60]
@@ -28,6 +26,10 @@ mtc_pick_place_demo:
     grasp_max_ik_solutions: 4
     grasp_ik_ignore_collisions: true
     additional_allowed_collision_links: [panda_panda_link7, panda_panda_link6]
+    pick_pose_topic: /mtc_pick_place_demo/pick_pose
+    place_pose_topic: /mtc_pick_place_demo/place_pose
+    use_external_pick_pose: true
+    use_external_place_pose: true
     #---上面的参数不要改动，下面的参数可以根据需要调整---
     goal_joint_tolerance: 0.00001
     approach_min_distance: 0.0
@@ -36,10 +38,9 @@ mtc_pick_place_demo:
     lift_distance: 0.12
     place_lower_min_distance: 0.0
     place_lower_distance: 0.13
-    place_retreat_distance: 0.03
     move_to_pick_timeout_sec: 15.0
     move_to_place_timeout_sec: 5.0
-    plan_velocity_scaling: 0.1
-    plan_acceleration_scaling: 0.1
-    cartesian_step_size: 0.005
+    plan_velocity_scaling: 0.06
+    plan_acceleration_scaling: 0.03
+    cartesian_step_size: 0.003
     place_max_ik_solutions: 4

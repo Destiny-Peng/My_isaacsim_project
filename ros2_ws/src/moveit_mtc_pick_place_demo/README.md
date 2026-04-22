@@ -59,6 +59,21 @@ ros2 service call /mtc_pick_place_demo/reset_and_run std_srvs/srv/Trigger '{}'
 - 修复了 `Node '/mtc_pick_place_demo' has already been added to an executor.` 崩溃。
 - 根因是等待 joint state 时对已在 executor 中的节点再次 `spin_some`。
 - 当前行为改为仅等待订阅回调更新 joint state，不再对本节点重复 spin。
+- 移除了历史兜底参数 `keep_alive_after_execute_failure`（不再需要）。
+- 移除了执行前 `waitForExecutionActionServers` 阶段，执行链路改为直接 `task.execute()`；若 action server 不可用会直接在 execute 阶段报错，便于定位真实故障环节。
+
+动态起终点扩展（2026-04-22）：
+
+- 新增可选外部位姿输入 topic（`geometry_msgs/msg/PoseStamped`）：
+  - `pick_pose_topic`（默认 `/mtc_pick_place_demo/pick_pose`）
+  - `place_pose_topic`（默认 `/mtc_pick_place_demo/place_pose`）
+- 使能开关：
+  - `use_external_pick_pose`
+  - `use_external_place_pose`
+- 行为说明：
+  - 每次 run 前读取最新 pick/place 目标；如目标变化会自动清空 cached solution 并重建 pipeline，再进行规划执行。
+  - 若外部 topic 未发布，则回退到 YAML 中的 `pick_pose_xyz` / `place_pose_xyz`。
+  - topic 的 `frame_id` 需为空或等于 `world_frame`，否则该条消息会被忽略。
 
 兼容端点：同一功能也可通过全局端点调用（`/run_task`、`/reset_task_state`、`/reset_and_run`）。
 
@@ -83,6 +98,25 @@ ros2 service call /mtc_pick_place_demo/reset_and_run std_srvs/srv/Trigger '{}'
     - `place_lower_min_distance`
     - `place_lower_distance`
     - `cartesian_step_size`
+    - `pick_pose_topic`
+    - `place_pose_topic`
+    - `use_external_pick_pose`
+    - `use_external_place_pose`
+
+  速度均匀化建议参数（当前默认）：
+
+  - `plan_velocity_scaling: 0.06`
+  - `plan_acceleration_scaling: 0.03`
+  - `approach_min_distance: 0.02`
+  - `lift_min_distance: 0.03`
+  - `place_lower_min_distance: 0.03`
+  - `cartesian_step_size: 0.003`
+
+  已清理无效参数：
+
+  - `keep_alive_after_execute_failure`
+  - `auto_run_on_start`
+  - `place_retreat_distance`
 
 建议：
 

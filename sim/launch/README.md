@@ -39,7 +39,7 @@ python3 sim/launch/run_combined_car_franka_headless.py \
 
 默认参数文件：`config/sim_default.yaml`，建议重点关注：
 
-- `simulation.gui` / `simulation.headless`
+- `simulation.headless`（`true` 为无界面，`false` 为 GUI）
 - `simulation.setup_ros2_python_bridge`
 - `simulation.clock_mode`（建议 `sim`，发布真实仿真时钟）
 - `simulation.sync_mtc_demo_object`
@@ -47,11 +47,18 @@ python3 sim/launch/run_combined_car_franka_headless.py \
 - `demo_object.support_surface_prim`（默认 `/Plane`）
 - `demo_object.support_surface_center`（建议与 MTC 的 `support_surface_xyz` 保持一致）
 
+说明：
+
+- `demo_object_prim`、`demo_object_pick_position`、`support_surface_prim`、`support_surface_center` 现在只通过 YAML 管理，已移除对应 `--` CLI 参数，减少重复配置入口。
+
 注意（2026-04-22 行为调整）：
 
 - 脚本不再在运行时创建 ActionGraph。
 - 脚本不再在运行时创建/覆盖 cube 与 table 物理体。
 - `sync_mtc_demo_object` 与 `sync_demo_support_surface` 仅更新已有 prim 的位置。
+- 原先用于运行时创建/调物理属性的一组参数已移除（size/color/dynamic/mass/friction/damping/contact offset/solver iterations）。
+- 历史参数 `simulation.gui` 已废弃；若旧 YAML 仍包含该字段，脚本会做兼容映射并给出告警，建议改为 `simulation.headless`。
+- `/clock` 发布改为 ROS2 标准 clock QoS，减少 `ros2 topic echo /clock --once` 场景下的丢包提示。
 
 运行时服务（由 Python bridge 提供）：
 

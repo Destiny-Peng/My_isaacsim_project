@@ -90,6 +90,92 @@
   - `sim/launch/run_combined_car_franka_headless.py`
   - `sim/launch/config/sim_default.yaml`
 
+### 3.6 MTC 无效兜底参数清理
+
+- 清理目标：移除“误判 execute 导致问题”阶段留下的历史兜底逻辑，减少误导与配置噪声。
+- 本次删除：
+  - C++ 参数与分支：`keep_alive_after_execute_failure`
+  - YAML 无效键：`keep_alive_after_execute_failure`、`auto_run_on_start`、`place_retreat_distance`
+- 说明：以上参数当前代码路径均不再需要，保留会造成“可调但不应再调”的认知负担。
+
+### 3.7 夹爪/环境碰撞问题可能原因（未验证）
+
+- 结论类型：静态代码分析推测，尚未做实验验证。
+- 可能原因 1：抓取阶段显式放开手与物体碰撞
+  - `allow collision (hand,object)` stage 会放开 hand group 的碰撞约束；如果 hand group 包含手指链路，规划会允许指-物体穿碰。
+- 可能原因 2：`grasp_ik_ignore_collisions=true` 进一步放松 IK 碰撞检查
+  - 当前参数文件启用了该开关，可能在抓取位姿生成时放大“可行但贴碰/穿碰”的解。
+- 可能原因 3：`additional_allowed_collision_links` 扩大了允许碰撞链路
+  - 目前含 `panda_panda_link6`、`panda_panda_link7`，会增加手部附近近碰通过率。
+- 可能原因 4：MoveIt 规划场景与 Isaac 实体几何不一致
+  - MoveIt 里是参数化 box（`demo_cube`/`demo_table`），Isaac 中是 `/Cube`、`/Plane`；若中心点、厚度、坐标系存在偏差，会出现“规划看似无碰撞，仿真实碰撞”。
+- 可能原因 5：SRDF/URDF 中手指碰撞几何或禁碰配置导致约束过宽
+  - 若手指 collision mesh 过粗/过小，或在 SRDF 被禁碰，会出现手指穿过 cube/plane 的表观问题。
+- 可能原因 6：抓取与下放阶段的路径容差较松
+  - `approach/lower` 段使用笛卡尔局部规划，若步长/最小距离设置过于激进，易贴边通过。
+
+建议后续验证顺序（仅计划）：
+
+1. 先关掉 `grasp_ik_ignore_collisions`，观察是否显著改善。
+2. 再收紧 `additional_allowed_collision_links`（仅保留必要链路）。
+3. 最后对齐 MoveIt 与 Isaac 的 cube/plane 位姿与尺寸语义。
+
+### 3.8 启动参数简化（清理无效项）
+
+- 问题：脚本中保留了大量“已移除功能”的参数，且 `gui`/`headless` 语义容易混淆。
+- 修复：
+  - 删除了与运行时创建物理体相关的无效参数（size/color/dynamic/mass/friction/damping/contact/solver 等）。
+  - 默认 YAML 仅保留仍被脚本消费的字段。
+  - 增加旧字段兼容：若 YAML 中存在 `gui` 且未设置 `headless`，自动映射为 `headless = not gui` 并输出弃用告警。
+
+### 3.9 启动脚本参数入口进一步收敛 + /clock 修复
+
+- 问题：同一配置同时存在 YAML 键与 `--` 参数，阅读和维护成本高；`/clock` 在 CLI 观察中出现连续丢包提示。
+- 修复：
+  - 删除了以下重复 CLI 参数，改为仅从 YAML 读取：
+    - `--demo-object-prim`
+    - `--demo-object-pick-position`
+    - `--support-surface-prim`
+    - `--support-surface-center`
+    - `--articulation-prim`
+  - `/clock` publisher 改为显式 clock QoS（BEST_EFFORT + KEEP_LAST + VOLATILE），兼容 Isaac 内置 rclpy。
+  - 默认 `publish_every_steps` 从 `1` 调整为 `4`，降低高频 CLI 订阅时的丢包提示概率。
+
+### 3.10 MTC 流程优化：去冗余等待 + 动态起终点 + 速度均匀化
+
+- 问题 1：执行前 `waitForExecutionActionServers` 属于冗余等待。
+  - 现状：若 action server 不可用，`task.execute()` 本身会失败并给出错误码。
+  - 修复：删除执行前 action server 等待逻辑，直接进入 execute，缩短链路并保留明确报错。
+
+- 问题 2：pick/place 起终点固定，不利于后续接入外部消息驱动。
+  - 修复：新增可选 topic 输入（`geometry_msgs/msg/PoseStamped`）：
+    - `pick_pose_topic`（默认 `/mtc_pick_place_demo/pick_pose`）
+    - `place_pose_topic`（默认 `/mtc_pick_place_demo/place_pose`）
+    - 开关：`use_external_pick_pose`、`use_external_place_pose`
+  - 行为：run 前读取最新目标；若目标变化，自动清空 cached solution 并重建 pipeline，保证新目标生效。
+  - 约束：`frame_id` 需为空或等于 `world_frame`，否则忽略该消息。
+
+- 问题 3：执行速度段间差异较大，存在抛物风险。
+  - 修复：调整默认参数（`pick_place_params.yaml`）：
+    - `plan_velocity_scaling: 0.06`
+    - `plan_acceleration_scaling: 0.03`
+    - `approach_min_distance: 0.02`
+    - `lift_min_distance: 0.03`
+    - `place_lower_min_distance: 0.03`
+    - `cartesian_step_size: 0.003`
+
+- 变更文件：
+  - `ros2_ws/src/moveit_mtc_pick_place_demo/src/mtc_pick_place_demo.cpp`
+  - `ros2_ws/src/moveit_mtc_pick_place_demo/config/pick_place_params.yaml`
+  - `ros2_ws/src/moveit_mtc_pick_place_demo/README.md`
+
+- 验证命令（本轮）：
+  - `cd /home/jacy/project/isaac_test/isaac_sim_fullstack/ros2_ws`
+  - `source /opt/ros/humble/setup.bash`
+  - `colcon build --packages-select moveit_mtc_pick_place_demo`
+  - `cd /home/jacy/project/isaac_test/isaac_sim_fullstack`
+  - `python3 ros2_ws/scripts/run_mtc_demo.py --param-file ros2_ws/src/moveit_mtc_pick_place_demo/config/mtc_launch_defaults.yaml`
+
 ## 4. 当前状态
 
 - 编译状态：待本轮改动后重新验证。
