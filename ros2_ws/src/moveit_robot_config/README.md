@@ -47,7 +47,7 @@ ros2 control list_controllers -c /controller_manager --verbose
 
 - `ros2_control_hardware_type`: 默认 `isaac`
 - `use_sim_time`: MoveIt 是否使用仿真时钟
-- `use_sim_time_for_control`: ros2_control 是否使用仿真时钟
+- `use_sim_time_for_control`: ros2_control 是否使用仿真时钟（当前默认建议 `true`）
 - `spawn_aux_controllers`: 是否启动 `hand_controller` 与 `joint_state_broadcaster`
 - `controller_spawn_delay`: 控制器拉起延迟
 - `controller_manager_timeout`: 控制器服务等待超时

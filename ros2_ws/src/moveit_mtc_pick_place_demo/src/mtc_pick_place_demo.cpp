@@ -20,13 +20,12 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <std_srvs/srv/trigger.hpp>
-#include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include <algorithm>
 #include <chrono>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <thread>
 #include <unordered_set>
@@ -86,21 +85,13 @@ public:
 
         pregrasp_ = this->declare_parameter<std::string>("pregrasp", "open");
         grasp_ = this->declare_parameter<std::string>("grasp", "close");
-        enable_gripper_actions_ = this->declare_parameter<bool>("enable_gripper_actions", false);
-        enable_initial_open_hand_stage_ = this->declare_parameter<bool>("enable_initial_open_hand_stage", false);
-        enable_move_to_pick_stage_ = this->declare_parameter<bool>("enable_move_to_pick_stage", true);
-        enable_move_to_place_stage_ = this->declare_parameter<bool>("enable_move_to_place_stage", true);
-        enable_retreat_after_place_stage_ = this->declare_parameter<bool>("enable_retreat_after_place_stage", true);
-        enable_forbid_hand_object_collision_after_place_ =
-            this->declare_parameter<bool>("enable_forbid_hand_object_collision_after_place", true);
-        enable_move_home_stage_ = this->declare_parameter<bool>("enable_move_home_stage", true);
         execute_ = this->declare_parameter<bool>("execute", false);
         keep_alive_after_execute_failure_ = this->declare_parameter<bool>("keep_alive_after_execute_failure", true);
         wait_for_execution_action_servers_ = this->declare_parameter<bool>("wait_for_execution_action_servers", true);
         execute_action_server_wait_timeout_sec_ =
             this->declare_parameter<double>("execute_action_server_wait_timeout_sec", 20.0);
-        arm_controller_action_name_ =
-            this->declare_parameter<std::string>("arm_controller_action_name", "arm_controller/follow_joint_trajectory");
+        arm_controller_action_name_ = this->declare_parameter<std::string>(
+            "arm_controller_action_name", "arm_controller/follow_joint_trajectory");
         hand_controller_action_name_ =
             this->declare_parameter<std::string>("hand_controller_action_name", "hand_controller/gripper_cmd");
         max_solutions_ = this->declare_parameter<int>("max_solutions", 4);
@@ -109,10 +100,11 @@ public:
         pick_xyz_ = this->declare_parameter<std::vector<double>>("pick_pose_xyz", std::vector<double>{0.55, 0.0, 0.20});
         place_xyz_ = this->declare_parameter<std::vector<double>>("place_pose_xyz", std::vector<double>{0.45, -0.25, 0.20});
         object_size_xyz_ = this->declare_parameter<std::vector<double>>("object_size_xyz", std::vector<double>{0.04, 0.04, 0.12});
-        support_surface_xyz_ = this->declare_parameter<std::vector<double>>(
-            "support_surface_xyz", std::vector<double>{0.55, 0.0, 0.52});
-        support_surface_size_xyz_ = this->declare_parameter<std::vector<double>>(
-            "support_surface_size_xyz", std::vector<double>{0.8, 0.8, 0.04});
+        support_surface_xyz_ = this->declare_parameter<std::vector<double>>("support_surface_xyz", std::vector<double>{0.55, 0.0, 0.52});
+        support_surface_size_xyz_ =
+            this->declare_parameter<std::vector<double>>("support_surface_size_xyz", std::vector<double>{0.8, 0.8, 0.04});
+
+        goal_joint_tolerance_ = this->declare_parameter<double>("goal_joint_tolerance", 1e-5);
 
         const double pick_x = this->declare_parameter<double>("pick_x", pick_xyz_[0]);
         const double pick_y = this->declare_parameter<double>("pick_y", pick_xyz_[1]);
@@ -134,18 +126,19 @@ public:
         const double support_surface_z = this->declare_parameter<double>("support_surface_z", support_surface_xyz_[2]);
         support_surface_xyz_ = {support_surface_x, support_surface_y, support_surface_z};
 
-        const double support_surface_size_x =
-            this->declare_parameter<double>("support_surface_size_x", support_surface_size_xyz_[0]);
-        const double support_surface_size_y =
-            this->declare_parameter<double>("support_surface_size_y", support_surface_size_xyz_[1]);
-        const double support_surface_size_z =
-            this->declare_parameter<double>("support_surface_size_z", support_surface_size_xyz_[2]);
+        const double support_surface_size_x = this->declare_parameter<double>("support_surface_size_x", support_surface_size_xyz_[0]);
+        const double support_surface_size_y = this->declare_parameter<double>("support_surface_size_y", support_surface_size_xyz_[1]);
+        const double support_surface_size_z = this->declare_parameter<double>("support_surface_size_z", support_surface_size_xyz_[2]);
         support_surface_size_xyz_ = {support_surface_size_x, support_surface_size_y, support_surface_size_z};
 
         approach_distance_ = this->declare_parameter<double>("approach_distance", 0.10);
         approach_min_distance_ = this->declare_parameter<double>("approach_min_distance", 0.02);
         lift_distance_ = this->declare_parameter<double>("lift_distance", 0.12);
-        place_retreat_distance_ = this->declare_parameter<double>("place_retreat_distance", 0.10);
+        lift_min_distance_ = this->declare_parameter<double>("lift_min_distance", 0.03);
+        place_lower_min_distance_ = this->declare_parameter<double>("place_lower_min_distance", 0.03);
+        place_lower_distance_ = this->declare_parameter<double>("place_lower_distance", 0.13);
+        move_to_pick_timeout_sec_ = this->declare_parameter<double>("move_to_pick_timeout_sec", 15.0);
+        move_to_place_timeout_sec_ = this->declare_parameter<double>("move_to_place_timeout_sec", 5.0);
         plan_velocity_scaling_ = this->declare_parameter<double>("plan_velocity_scaling", 0.2);
         plan_acceleration_scaling_ = this->declare_parameter<double>("plan_acceleration_scaling", 0.2);
         cartesian_step_size_ = this->declare_parameter<double>("cartesian_step_size", 0.01);
@@ -154,13 +147,11 @@ public:
         grasp_z_offset_ = this->declare_parameter<double>("grasp_z_offset", 0.08);
         grasp_angle_delta_ = this->declare_parameter<double>("grasp_angle_delta", M_PI / 12.0);
         grasp_max_ik_solutions_ = this->declare_parameter<int>("grasp_max_ik_solutions", 16);
+        place_max_ik_solutions_ = this->declare_parameter<int>("place_max_ik_solutions", 4);
         grasp_ik_ignore_collisions_ = this->declare_parameter<bool>("grasp_ik_ignore_collisions", false);
         additional_allowed_collision_links_ = this->declare_parameter<std::vector<std::string>>(
             "additional_allowed_collision_links", std::vector<std::string>{"panda_panda_link7"});
-        grasp_rpy_ = this->declare_parameter<std::vector<double>>(
-            "grasp_rpy", std::vector<double>{1.571, 0.785, 1.571});
-        enable_allow_grasp_collision_stage_ =
-            this->declare_parameter<bool>("enable_allow_grasp_collision_stage", true);
+        grasp_rpy_ = this->declare_parameter<std::vector<double>>("grasp_rpy", std::vector<double>{1.571, 0.785, 1.571});
 
         joint_state_topic_ = this->declare_parameter<std::string>("joint_state_topic", "/joint_states");
         joint_state_wait_timeout_sec_ = this->declare_parameter<double>("joint_state_wait_timeout_sec", 10.0);
@@ -176,47 +167,50 @@ public:
                 }
             });
 
-        auto_run_on_start_ = this->declare_parameter<bool>("auto_run_on_start", true);
-
         run_task_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "run_task",
-            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
             {
-                response->success = this->run();
-                response->message = response->success ? "MTC run completed" : "MTC run failed";
+                this->handleRunTaskTrigger(request, response);
+            });
+        run_task_srv_private_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/run_task",
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                   std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+            {
+                this->handleRunTaskTrigger(request, response);
             });
 
         reset_and_run_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "reset_and_run",
-            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
             {
-                if (!this->resetPlanningSceneForRetry())
-                {
-                    response->success = false;
-                    response->message = "MTC reset_and_run failed in planning scene reset step";
-                    return;
-                }
-                task_.reset();
-                response->success = this->run();
-                response->message = response->success ? "MTC reset_and_run completed" : "MTC reset_and_run failed";
+                this->handleResetAndRunTrigger(request, response);
+            });
+        reset_and_run_srv_private_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/reset_and_run",
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                   std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+            {
+                this->handleResetAndRunTrigger(request, response);
             });
 
         reset_task_state_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "reset_task_state",
-            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
             {
-                task_.reset();
-                response->success = this->resetPlanningSceneForRetry();
-                response->message = response->success ? "MTC task/planning-scene reset completed" : "MTC task/planning-scene reset failed";
+                this->handleResetTaskStateTrigger(request, response);
             });
-    }
-
-    bool autoRunOnStart() const
-    {
-        return auto_run_on_start_;
+        reset_task_state_srv_private_ = this->create_service<std_srvs::srv::Trigger>(
+            "~/reset_task_state",
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                   std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+            {
+                this->handleResetTaskStateTrigger(request, response);
+            });
     }
 
     bool run()
@@ -255,13 +249,90 @@ public:
             return false;
         }
 
+        if (!task_pipeline_initialized_)
+        {
+            if (!initializeTaskPipeline())
+            {
+                return false;
+            }
+        }
+        else
+        {
+            RCLCPP_INFO(this->get_logger(), "Reusing existing MTC task pipeline (cached task object)");
+        }
+
+        mtc::Task &task = *task_;
+
+        if (!solution_)
+        {
+            task.reset();
+            if (!task.plan(max_solutions_))
+            {
+                RCLCPP_ERROR(this->get_logger(), "MTC plan failed");
+                std::stringstream ss;
+                task.explainFailure(ss);
+                RCLCPP_ERROR(this->get_logger(), "MTC failure detail:\n%s", ss.str().c_str());
+                return false;
+            }
+
+            solution_ = task.solutions().front();
+            RCLCPP_INFO(this->get_logger(), "Cached best solution for reuse across repeated execute calls");
+        }
+        else
+        {
+            RCLCPP_INFO(this->get_logger(), "Reusing cached solution without replanning");
+        }
+
+        task.introspection().publishSolution(*solution_);
+        RCLCPP_INFO(this->get_logger(), "Published best solution to MTC introspection topics");
+
+        if (!execute_)
+        {
+            RCLCPP_INFO(this->get_logger(), "Execution disabled (`execute=false`); keeping node alive for RViz introspection");
+            return true;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Starting task execution");
+        if (wait_for_execution_action_servers_ && !waitForExecutionActionServers())
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Execution action servers are not ready. Skipping execute to avoid immediate CONTROL_FAILED.");
+            if (keep_alive_after_execute_failure_)
+            {
+                RCLCPP_WARN(this->get_logger(), "Keeping node alive after execute precheck failure for RViz analysis");
+            }
+            return false;
+        }
+
+        const auto result = task.execute(*solution_);
+        if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Task execution failed: code=%d (%s)",
+                         result.val,
+                         moveItErrorCodeToString(result.val));
+            if (keep_alive_after_execute_failure_)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "Keeping node alive after execute failure for RViz analysis (`keep_alive_after_execute_failure=true`)");
+            }
+            return false;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "MTC pick and place execution completed successfully");
+        return true;
+    }
+
+private:
+    bool initializeTaskPipeline()
+    {
         task_ = std::make_unique<mtc::Task>();
         mtc::Task &task = *task_;
         task.stages()->setName("pick_place_task");
         task.loadRobotModel(shared_from_this());
 
         auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(shared_from_this());
-        sampling_planner->setProperty("goal_joint_tolerance", 1e-5);
+        sampling_planner->setProperty("goal_joint_tolerance", goal_joint_tolerance_);
         sampling_planner->setProperty("max_velocity_scaling_factor", plan_velocity_scaling_);
         sampling_planner->setProperty("max_acceleration_scaling_factor", plan_acceleration_scaling_);
 
@@ -300,11 +371,9 @@ public:
                     }
                     return true;
                 });
-            initial_state_ptr = applicability_filter.get();
             task.add(std::move(applicability_filter));
         }
 
-        if (enable_initial_open_hand_stage_)
         {
             auto stage = std::make_unique<mtc::stages::MoveTo>("open hand", sampling_planner);
             stage->setGroup(hand_group_);
@@ -314,28 +383,21 @@ public:
             task.add(std::move(stage));
         }
 
-        if (enable_move_to_pick_stage_)
         {
             auto stage = std::make_unique<mtc::stages::Connect>(
                 "move to pick", mtc::stages::Connect::GroupPlannerVector{{arm_group_, sampling_planner}});
-            stage->setTimeout(15.0);
+            stage->setTimeout(move_to_pick_timeout_sec_);
             stage->properties().configureInitFrom(mtc::Stage::PARENT);
             stage->setTrajectoryExecutionInfo(arm_exec_info);
             task.add(std::move(stage));
         }
-        /****************************************************
-         *                                                  *
-         *               Pick Object                        *
-         *                                                  *
-         ***************************************************/
+
         mtc::Stage *pick_stage_ptr = nullptr;
         {
             auto grasp = std::make_unique<mtc::SerialContainer>("pick object");
             task.properties().exposeTo(grasp->properties(), {"eef", "hand", "group", "ik_frame"});
             grasp->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "hand", "group", "ik_frame"});
-            /****************************************************
-      ---- *               Approach Object                    *
-             ***************************************************/
+
             {
                 auto stage = std::make_unique<mtc::stages::MoveRelative>("approach object", cartesian_planner);
                 stage->properties().set("marker_ns", "approach_object");
@@ -351,9 +413,7 @@ public:
                 stage->setTrajectoryExecutionInfo(arm_exec_info);
                 grasp->insert(std::move(stage));
             }
-            /****************************************************
-      ---- *               Generate Grasp Pose                *
-             ***************************************************/
+
             {
                 auto stage = std::make_unique<mtc::stages::GenerateGraspPose>("generate grasp pose");
                 stage->properties().configureInitFrom(mtc::Stage::PARENT);
@@ -366,7 +426,7 @@ public:
                 auto wrapper = std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
                 wrapper->setMaxIKSolutions(grasp_max_ik_solutions_);
                 wrapper->setMinSolutionDistance(1.0);
-                // wrapper->setIgnoreCollisions(grasp_ik_ignore_collisions_);
+                wrapper->setIgnoreCollisions(grasp_ik_ignore_collisions_);
                 wrapper->setIKFrame(makeGraspFrameTransform(
                                         grasp_x_offset_,
                                         grasp_y_offset_,
@@ -377,9 +437,7 @@ public:
                 wrapper->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
                 grasp->insert(std::move(wrapper));
             }
-            /****************************************************
-      ---- *               Allow Collision (hand object)   *
-             ***************************************************/
+
             {
                 auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (hand,object)");
                 auto collision_links = task.getRobotModel()
@@ -400,10 +458,7 @@ public:
                 stage->allowCollisions(object_name_, collision_links, true);
                 grasp->insert(std::move(stage));
             }
-            /****************************************************
-      ---- *               Close Hand                      *
-             ***************************************************/
-            if (enable_gripper_actions_)
+
             {
                 auto stage = std::make_unique<mtc::stages::MoveTo>("close hand", sampling_planner);
                 stage->setGroup(hand_group_);
@@ -411,30 +466,24 @@ public:
                 stage->setTrajectoryExecutionInfo(hand_exec_info);
                 grasp->insert(std::move(stage));
             }
-            /****************************************************
-      .... *               Attach Object                      *
-             ***************************************************/
+
             {
                 auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object");
                 stage->attachObject(object_name_, hand_frame_);
                 grasp->insert(std::move(stage));
             }
-            /****************************************************
-      .... *               Allow collision (object support)   *
-             ***************************************************/
+
             if (!support_surface_.empty())
             {
                 auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (object,support)");
                 stage->allowCollisions({object_name_}, {support_surface_}, true);
                 grasp->insert(std::move(stage));
             }
-            /****************************************************
-      .... *               Lift object                        *
-             ***************************************************/
+
             {
                 auto stage = std::make_unique<mtc::stages::MoveRelative>("lift object", cartesian_planner);
                 stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-                stage->setMinMaxDistance(0.03, lift_distance_);
+                stage->setMinMaxDistance(lift_min_distance_, lift_distance_);
                 stage->setIKFrame(hand_frame_);
                 stage->properties().set("marker_ns", "lift_object");
 
@@ -445,9 +494,7 @@ public:
                 stage->setTrajectoryExecutionInfo(arm_exec_info);
                 grasp->insert(std::move(stage));
             }
-            /****************************************************
-      .... *               Forbid collision (object support)  *
-             ***************************************************/
+
             if (!support_surface_.empty())
             {
                 auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (object,surface)");
@@ -459,17 +506,15 @@ public:
             task.add(std::move(grasp));
         }
 
-        if (enable_move_to_place_stage_)
         {
             auto stage = std::make_unique<mtc::stages::Connect>(
                 "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_, sampling_planner}});
-            stage->setTimeout(5.0);
+            stage->setTimeout(move_to_place_timeout_sec_);
             stage->properties().configureInitFrom(mtc::Stage::PARENT);
             stage->setTrajectoryExecutionInfo(arm_exec_info);
             task.add(std::move(stage));
         }
 
-        if (enable_move_to_place_stage_)
         {
             auto place = std::make_unique<mtc::SerialContainer>("place object");
             task.properties().exposeTo(place->properties(), {"eef", "hand", "group", "ik_frame"});
@@ -480,7 +525,7 @@ public:
                 stage->properties().set("marker_ns", "lower_object");
                 stage->properties().set("link", hand_frame_);
                 stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-                stage->setMinMaxDistance(0.03, 0.13);
+                stage->setMinMaxDistance(place_lower_min_distance_, place_lower_distance_);
                 stage->setIKFrame(hand_frame_);
 
                 geometry_msgs::msg::Vector3Stamped vec;
@@ -507,7 +552,7 @@ public:
                 stage->setMonitoredStage(pick_stage_ptr);
 
                 auto wrapper = std::make_unique<mtc::stages::ComputeIK>("place pose IK", std::move(stage));
-                wrapper->setMaxIKSolutions(4);
+                wrapper->setMaxIKSolutions(place_max_ik_solutions_);
                 wrapper->setIKFrame(makeGraspFrameTransform(
                                         grasp_x_offset_,
                                         grasp_y_offset_,
@@ -519,7 +564,6 @@ public:
                 place->insert(std::move(wrapper));
             }
 
-            if (enable_gripper_actions_)
             {
                 auto stage = std::make_unique<mtc::stages::MoveTo>("open hand", sampling_planner);
                 stage->setGroup(hand_group_);
@@ -534,7 +578,6 @@ public:
                 place->insert(std::move(stage));
             }
 
-            if (enable_retreat_after_place_stage_)
             {
                 auto stage = std::make_unique<mtc::stages::MoveTo>("retreat after place", sampling_planner);
                 stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
@@ -544,7 +587,6 @@ public:
                 place->insert(std::move(stage));
             }
 
-            if (enable_forbid_hand_object_collision_after_place_)
             {
                 auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (hand,object)");
                 stage->allowCollisions(object_name_, *task.getRobotModel()->getJointModelGroup(hand_group_), false);
@@ -554,7 +596,6 @@ public:
             task.add(std::move(place));
         }
 
-        if (enable_move_home_stage_)
         {
             auto stage = std::make_unique<mtc::stages::MoveTo>("move home", sampling_planner);
             stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
@@ -571,93 +612,79 @@ public:
         catch (const mtc::InitStageException &e)
         {
             RCLCPP_ERROR_STREAM(this->get_logger(), "Task init failed: " << e);
+            task_.reset();
             return false;
         }
 
-        if (!task.plan(max_solutions_))
-        {
-            RCLCPP_ERROR(this->get_logger(), "MTC plan failed");
-            std::stringstream ss;
-            task.explainFailure(ss);
-            RCLCPP_ERROR(this->get_logger(), "MTC failure detail:\n%s", ss.str().c_str());
-            return false;
-        }
-
-        auto solution = task.solutions().front();
-        task.introspection().publishSolution(*solution);
-        RCLCPP_INFO(this->get_logger(), "Published best solution to MTC introspection topics");
-
-        if (!execute_)
-        {
-            RCLCPP_INFO(this->get_logger(), "Execution disabled (`execute=false`); keeping node alive for RViz introspection");
-            return true;
-        }
-
-        RCLCPP_INFO(this->get_logger(), "Starting task execution");
-        if (wait_for_execution_action_servers_ && !waitForExecutionActionServers())
-        {
-            RCLCPP_ERROR(this->get_logger(),
-                         "Execution action servers are not ready. Skipping execute to avoid immediate CONTROL_FAILED.");
-            if (keep_alive_after_execute_failure_)
-            {
-                RCLCPP_WARN(this->get_logger(),
-                            "Keeping node alive after execute precheck failure for RViz analysis");
-            }
-            return false;
-        }
-
-        const auto result = task.execute(*solution);
-        if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
-        {
-            RCLCPP_ERROR(this->get_logger(),
-                         "Task execution failed: code=%d (%s)",
-                         result.val,
-                         moveItErrorCodeToString(result.val));
-            if (keep_alive_after_execute_failure_)
-            {
-                RCLCPP_WARN(this->get_logger(),
-                            "Keeping node alive after execute failure for RViz analysis (`keep_alive_after_execute_failure=true`)");
-            }
-            return false;
-        }
-
-        RCLCPP_INFO(this->get_logger(), "MTC pick and place execution completed successfully");
+        task_pipeline_initialized_ = true;
+        RCLCPP_INFO(this->get_logger(), "MTC task pipeline initialized once and will be reused across service reruns");
         return true;
     }
 
-private:
-    bool resetPlanningSceneForRetry()
+    void resetCachedTaskState()
     {
-        moveit::planning_interface::PlanningSceneInterface psi;
-
-        moveit_msgs::msg::PlanningScene scene_msg;
-        scene_msg.is_diff = true;
-        scene_msg.robot_state.is_diff = true;
-
-        moveit_msgs::msg::AttachedCollisionObject detach;
-        detach.link_name = hand_frame_;
-        detach.object.id = object_name_;
-        detach.object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
-        scene_msg.robot_state.attached_collision_objects.push_back(detach);
-
-        const bool detach_ok = psi.applyPlanningScene(scene_msg);
-        if (!detach_ok)
+        solution_.reset();
+        if (task_)
         {
-            RCLCPP_WARN(this->get_logger(),
-                        "Failed to apply attached-object cleanup for '%s' on link '%s'",
-                        object_name_.c_str(),
-                        hand_frame_.c_str());
+            task_->reset();
+        }
+    }
+
+    void handleRunTaskTrigger(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> & /*request*/,
+        const std::shared_ptr<std_srvs::srv::Trigger::Response> &response)
+    {
+        {
+            std::lock_guard<std::mutex> lk(this->run_mutex_);
+            if (this->run_in_progress_)
+            {
+                response->success = false;
+                response->message = "MTC run ignored: another run is already in progress";
+                return;
+            }
         }
 
-        std::vector<std::string> ids_to_remove{object_name_};
-        if (!support_surface_.empty())
-        {
-            ids_to_remove.push_back(support_surface_);
-        }
-        psi.removeCollisionObjects(ids_to_remove);
+        std::thread([self = shared_from_this()]
+                    { static_cast<MTCPickPlaceDemo *>(self.get())->run(); })
+            .detach();
 
-        RCLCPP_INFO(this->get_logger(), "Planning scene reset completed for retry");
-        return true;
+        response->success = true;
+        response->message = "MTC run triggered asynchronously";
+    }
+
+    void handleResetAndRunTrigger(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> & /*request*/,
+        const std::shared_ptr<std_srvs::srv::Trigger::Response> &response)
+    {
+        {
+            std::lock_guard<std::mutex> lk(this->run_mutex_);
+            if (this->run_in_progress_)
+            {
+                response->success = false;
+                response->message = "MTC reset_and_run ignored: another run is already in progress";
+                return;
+            }
+        }
+
+        std::thread([self = shared_from_this()]
+                    {
+                        auto *node = static_cast<MTCPickPlaceDemo *>(self.get());
+                        node->resetPlanningSceneForRetry();
+                        node->resetCachedTaskState();
+                        node->run(); })
+            .detach();
+
+        response->success = true;
+        response->message = "MTC reset_and_run triggered asynchronously";
+    }
+
+    void handleResetTaskStateTrigger(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> & /*request*/,
+        const std::shared_ptr<std_srvs::srv::Trigger::Response> &response)
+    {
+        resetCachedTaskState();
+        response->success = this->resetPlanningSceneForRetry();
+        response->message = response->success ? "MTC task/planning-scene reset completed" : "MTC task/planning-scene reset failed";
     }
 
     bool waitForExecutionActionServers()
@@ -671,13 +698,9 @@ private:
 
         const auto timeout = std::chrono::duration<double>(execute_action_server_wait_timeout_sec_);
         const auto arm_ok = waitForActionServer<control_msgs::action::FollowJointTrajectory>(
-            arm_controller_action_name_,
-            timeout,
-            "arm_controller");
+            arm_controller_action_name_, timeout, "arm_controller");
         const auto hand_ok = waitForActionServer<control_msgs::action::GripperCommand>(
-            hand_controller_action_name_,
-            timeout,
-            "hand_controller");
+            hand_controller_action_name_, timeout, "hand_controller");
         return arm_ok && hand_ok;
     }
 
@@ -723,7 +746,6 @@ private:
         rclcpp::WallRate rate(50.0);
         while (rclcpp::ok())
         {
-            rclcpp::spin_some(shared_from_this());
             if (joint_state_received_)
             {
                 RCLCPP_INFO(this->get_logger(), "Received joint state from topic '%s'", joint_state_topic_.c_str());
@@ -750,7 +772,6 @@ private:
         }
 
         moveit::planning_interface::PlanningSceneInterface psi;
-
         std::vector<moveit_msgs::msg::CollisionObject> objects;
 
         if (!support_surface_.empty())
@@ -761,10 +782,7 @@ private:
 
             shape_msgs::msg::SolidPrimitive table_primitive;
             table_primitive.type = shape_msgs::msg::SolidPrimitive::BOX;
-            table_primitive.dimensions = {
-                support_surface_size_xyz_[0],
-                support_surface_size_xyz_[1],
-                support_surface_size_xyz_[2]};
+            table_primitive.dimensions = {support_surface_size_xyz_[0], support_surface_size_xyz_[1], support_surface_size_xyz_[2]};
 
             geometry_msgs::msg::Pose table_pose;
             table_pose.orientation.w = 1.0;
@@ -784,10 +802,7 @@ private:
 
         shape_msgs::msg::SolidPrimitive primitive;
         primitive.type = shape_msgs::msg::SolidPrimitive::BOX;
-        primitive.dimensions = {
-            object_size_xyz_[0],
-            object_size_xyz_[1],
-            object_size_xyz_[2]};
+        primitive.dimensions = {object_size_xyz_[0], object_size_xyz_[1], object_size_xyz_[2]};
 
         geometry_msgs::msg::Pose pose;
         pose.orientation.w = 1.0;
@@ -811,6 +826,40 @@ private:
         return true;
     }
 
+    bool resetPlanningSceneForRetry()
+    {
+        moveit::planning_interface::PlanningSceneInterface psi;
+
+        moveit_msgs::msg::PlanningScene scene_msg;
+        scene_msg.is_diff = true;
+        scene_msg.robot_state.is_diff = true;
+
+        moveit_msgs::msg::AttachedCollisionObject detach;
+        detach.link_name = hand_frame_;
+        detach.object.id = object_name_;
+        detach.object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+        scene_msg.robot_state.attached_collision_objects.push_back(detach);
+
+        const bool detach_ok = psi.applyPlanningScene(scene_msg);
+        if (!detach_ok)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "Failed to apply attached-object cleanup for '%s' on link '%s'",
+                        object_name_.c_str(),
+                        hand_frame_.c_str());
+        }
+
+        std::vector<std::string> ids_to_remove{object_name_};
+        if (!support_surface_.empty())
+        {
+            ids_to_remove.push_back(support_surface_);
+        }
+        psi.removeCollisionObjects(ids_to_remove);
+
+        RCLCPP_INFO(this->get_logger(), "Planning scene reset completed for retry");
+        return true;
+    }
+
     std::string arm_group_;
     std::string hand_group_;
     std::string hand_frame_;
@@ -820,13 +869,6 @@ private:
 
     std::string pregrasp_;
     std::string grasp_;
-    bool enable_gripper_actions_{};
-    bool enable_initial_open_hand_stage_{};
-    bool enable_move_to_pick_stage_{};
-    bool enable_move_to_place_stage_{};
-    bool enable_retreat_after_place_stage_{};
-    bool enable_forbid_hand_object_collision_after_place_{};
-    bool enable_move_home_stage_{};
     bool execute_{};
     bool keep_alive_after_execute_failure_{};
     bool wait_for_execution_action_servers_{};
@@ -842,10 +884,15 @@ private:
     std::vector<double> support_surface_xyz_;
     std::vector<double> support_surface_size_xyz_;
 
+    double goal_joint_tolerance_{};
     double approach_distance_{};
     double approach_min_distance_{};
     double lift_distance_{};
-    double place_retreat_distance_{};
+    double lift_min_distance_{};
+    double place_lower_min_distance_{};
+    double place_lower_distance_{};
+    double move_to_pick_timeout_sec_{};
+    double move_to_place_timeout_sec_{};
     double plan_velocity_scaling_{};
     double plan_acceleration_scaling_{};
     double cartesian_step_size_{};
@@ -854,22 +901,26 @@ private:
     double grasp_z_offset_{};
     double grasp_angle_delta_{};
     int grasp_max_ik_solutions_{};
+    int place_max_ik_solutions_{};
     bool grasp_ik_ignore_collisions_{};
     std::vector<std::string> additional_allowed_collision_links_;
     std::vector<double> grasp_rpy_;
-    bool enable_allow_grasp_collision_stage_{};
 
     std::string joint_state_topic_;
     double joint_state_wait_timeout_sec_{};
     bool joint_state_received_{false};
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
-    bool auto_run_on_start_{};
+    bool task_pipeline_initialized_{false};
     bool run_in_progress_{false};
     std::mutex run_mutex_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr run_task_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr run_task_srv_private_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_and_run_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_and_run_srv_private_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_task_state_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_task_state_srv_private_;
     std::unique_ptr<mtc::Task> task_;
+    mtc::SolutionBaseConstPtr solution_;
 };
 
 int main(int argc, char **argv)
@@ -879,17 +930,8 @@ int main(int argc, char **argv)
     std::thread spinning_thread([node]
                                 { rclcpp::spin(node); });
 
-    rclcpp::sleep_for(std::chrono::seconds(2));
-    if (node->autoRunOnStart())
-    {
-        node->run();
-    }
-    else
-    {
-        RCLCPP_INFO(node->get_logger(), "auto_run_on_start=false, waiting for service-triggered run_task/reset_and_run");
-    }
+    node->run();
 
-    // Keep introspection topics alive for RViz after planning finishes.
     spinning_thread.join();
     return 0;
 }

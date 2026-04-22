@@ -600,88 +600,20 @@ def _load_initial_joint_positions(param_file: str) -> dict[str, float]:
     return parsed
 
 
-def _upsert_demo_cube(
+def _set_existing_prim_position(
     stage,
     prim_path: str,
-    size_xyz: tuple[float, float, float],
     center_xyz: tuple[float, float, float],
-    color_rgb: tuple[float, float, float],
-    dynamic: bool,
-    mass_kg: float,
-    enable_ccd: bool,
-) -> None:
-    """Create/update a cube in Isaac Sim to mirror MoveIt PlanningScene object.
+    label: str,
+) -> tuple[bool, str]:
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        return False, f"{label} prim not found: {prim_path}"
 
-    The cube is created as a collider. It can optionally be dynamic for grasp interaction.
-    """
-    from pxr import Gf
-    from pxr import UsdGeom
-    from pxr import UsdPhysics
+    if not _set_prim_world_translation(stage, prim_path, np.array(center_xyz, dtype=np.float64)):
+        return False, f"failed to set {label} position: {prim_path}"
 
-    cube = UsdGeom.Cube.Define(stage, prim_path)
-    cube_prim = cube.GetPrim()
-
-    # Cube side length defaults to 2.0 in USD, so half-size scales map directly.
-    cube.GetSizeAttr().Set(2.0)
-    xform = UsdGeom.XformCommonAPI(cube_prim)
-    xform.SetTranslate(Gf.Vec3d(center_xyz[0], center_xyz[1], center_xyz[2]))
-    xform.SetScale(Gf.Vec3f(size_xyz[0] * 0.5, size_xyz[1] * 0.5, size_xyz[2] * 0.5))
-
-    cube.CreateDisplayColorAttr().Set([Gf.Vec3f(color_rgb[0], color_rgb[1], color_rgb[2])])
-
-    # Mark as collider so physics contacts can be resolved in simulation.
-    UsdPhysics.CollisionAPI.Apply(cube_prim)
-
-    if dynamic:
-        rigid_api = UsdPhysics.RigidBodyAPI.Apply(cube_prim)
-        rigid_api.CreateRigidBodyEnabledAttr(True)
-        mass_api = UsdPhysics.MassAPI.Apply(cube_prim)
-        mass_api.CreateMassAttr(max(0.001, mass_kg))
-
-        if enable_ccd:
-            try:
-                from pxr import PhysxSchema
-
-                physx_rigid_api = PhysxSchema.PhysxRigidBodyAPI.Apply(cube_prim)
-                physx_rigid_api.CreateEnableCCDAttr(True)
-            except Exception as exc:
-                print(f"[WARN] Failed to enable CCD on demo cube: {exc}")
-
-    print(
-        "[INFO] Demo cube synced in Isaac Sim: "
-        f"prim={prim_path}, center={center_xyz}, size={size_xyz}, color={color_rgb}, "
-        f"dynamic={dynamic}, mass_kg={mass_kg}, ccd={enable_ccd}"
-    )
-
-
-def _upsert_support_surface(
-    stage,
-    prim_path: str,
-    size_xyz: tuple[float, float, float],
-    center_xyz: tuple[float, float, float],
-    color_rgb: tuple[float, float, float],
-) -> None:
-    """Create/update a static support surface collider for demo cube contact."""
-    from pxr import Gf
-    from pxr import UsdGeom
-    from pxr import UsdPhysics
-
-    table = UsdGeom.Cube.Define(stage, prim_path)
-    table_prim = table.GetPrim()
-    table.GetSizeAttr().Set(2.0)
-
-    xform = UsdGeom.XformCommonAPI(table_prim)
-    xform.SetTranslate(Gf.Vec3d(center_xyz[0], center_xyz[1], center_xyz[2]))
-    xform.SetScale(Gf.Vec3f(size_xyz[0] * 0.3, size_xyz[1] * 0.3, size_xyz[2] * 0.3))
-    table.CreateDisplayColorAttr().Set([Gf.Vec3f(color_rgb[0], color_rgb[1], color_rgb[2])])
-
-    # Keep table static but collidable so dynamic cube can rest on it.
-    UsdPhysics.CollisionAPI.Apply(table_prim)
-
-    print(
-        "[INFO] Support surface synced in Isaac Sim: "
-        f"prim={prim_path}, center={center_xyz}, size={size_xyz}, color={color_rgb}"
-    )
+    return True, f"{label} position updated to {center_xyz} on {prim_path}"
 
 
 def _get_prim_world_translation(stage, prim_path: str) -> np.ndarray | None:
@@ -705,194 +637,95 @@ def _set_prim_world_translation(stage, prim_path: str, xyz: np.ndarray) -> bool:
     if not prim or not prim.IsValid():
         return False
 
-    xform = UsdGeom.XformCommonAPI(prim)
-    xform.SetTranslate(Gf.Vec3d(float(xyz[0]), float(xyz[1]), float(xyz[2])))
+    xformable = UsdGeom.Xformable(prim)
+    translate_op = None
+    for op in xformable.GetOrderedXformOps():
+        if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+            translate_op = op
+            break
+
+    if translate_op is None:
+        translate_op = xformable.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
+
+    translate_op.Set(Gf.Vec3d(float(xyz[0]), float(xyz[1]), float(xyz[2])))
     return True
 
 
-class _DemoObjectAttachmentEmulator:
-    """Emulate gripper attach/detach in simulation so object follows hand when grasped."""
+def _reset_prim_orientation_identity(stage, prim_path: str) -> tuple[bool, str]:
+    from pxr import Gf
+    from pxr import UsdGeom
 
-    def __init__(
-        self,
-        stage,
-        cube_prim: str,
-        hand_prim: str,
-        close_threshold: float,
-        open_threshold: float,
-        attach_distance_threshold: float,
-    ) -> None:
-        self._stage = stage
-        self._cube_prim = cube_prim
-        self._hand_prim = hand_prim
-        self._close_threshold = close_threshold
-        self._open_threshold = open_threshold
-        self._attach_distance_threshold = attach_distance_threshold
-        self._attached = False
-        self._offset = np.zeros((3,), dtype=np.float64)
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        return False, f"prim not found: {prim_path}"
 
-    def step(self, finger_pos: float | None) -> None:
-        if finger_pos is None:
-            return
+    xformable = UsdGeom.Xformable(prim)
+    touched = False
+    for op in xformable.GetOrderedXformOps():
+        op_type = op.GetOpType()
+        if op_type == UsdGeom.XformOp.TypeOrient:
+            op.Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            touched = True
+        elif op_type == UsdGeom.XformOp.TypeRotateXYZ:
+            op.Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            touched = True
+        elif op_type == UsdGeom.XformOp.TypeRotateX:
+            op.Set(0.0)
+            touched = True
+        elif op_type == UsdGeom.XformOp.TypeRotateY:
+            op.Set(0.0)
+            touched = True
+        elif op_type == UsdGeom.XformOp.TypeRotateZ:
+            op.Set(0.0)
+            touched = True
 
-        hand_xyz = _get_prim_world_translation(self._stage, self._hand_prim)
-        cube_xyz = _get_prim_world_translation(self._stage, self._cube_prim)
-        if hand_xyz is None or cube_xyz is None:
-            return
+    if touched:
+        return True, "orientation reset by existing rotate/orient ops"
 
-        is_closed = finger_pos <= self._close_threshold
-        is_open = finger_pos >= self._open_threshold
-
-        if self._attached:
-            target = hand_xyz + self._offset
-            _set_prim_world_translation(self._stage, self._cube_prim, target)
-            if is_open:
-                self._attached = False
-                print("[INFO] Demo cube detached from hand")
-            return
-
-        if is_closed:
-            dist = float(np.linalg.norm(cube_xyz - hand_xyz))
-            if dist <= self._attach_distance_threshold:
-                self._attached = True
-                self._offset = cube_xyz - hand_xyz
-                print(f"[INFO] Demo cube attached to hand (distance={dist:.4f} m)")
-
-    def reset(self) -> None:
-        self._attached = False
-        self._offset = np.zeros((3,), dtype=np.float64)
+    try:
+        orient_op = xformable.AddOrientOp(UsdGeom.XformOp.PrecisionFloat)
+        orient_op.Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        return True, "orientation reset by newly added orient op"
+    except Exception as exc:
+        return False, f"failed to reset orientation: {exc}"
 
 
-def _setup_ros2_joint_bridge_graph(
-    articulation_prim: str,
-    joint_cmd_topic: str,
-    joint_state_topic: str,
-    clock_topic: str,
-) -> bool:
-    """Create an OmniGraph bridge for MoveIt topic_based_ros2_control.
+def _reset_demo_cube_transform_and_dynamics(
+    stage,
+    prim_path: str,
+    center_xyz: tuple[float, float, float],
+) -> tuple[bool, str]:
+    """Reset demo cube pose and clear rigid-body velocities when applicable."""
+    from pxr import Gf
+    from pxr import UsdPhysics
 
-    Bridge behavior:
-    - Subscribe joint commands from ROS2 topic (default: /joint_commands)
-    - Apply commands to articulation
-    - Publish joint states (default: /joint_states)
-    - Publish /clock
-    """
-    import omni.graph.core as og
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        return False, f"demo cube prim not found: {prim_path}"
 
-    import omni.usd
+    if not _set_prim_world_translation(stage, prim_path, np.array(center_xyz, dtype=np.float64)):
+        return False, f"failed to reset demo cube transform: {prim_path}"
 
-    keys = og.Controller.Keys
-    stage = omni.usd.get_context().get_stage()
-    has_action_graph = stage is not None and stage.GetPrimAtPath("/ActionGraph").IsValid()
+    orient_ok, orient_msg = _reset_prim_orientation_identity(stage, prim_path)
+    if not orient_ok:
+        return False, orient_msg
 
-    # Prefer dedicated runtime graph paths to avoid collisions with existing scene graphs.
-    ts = int(time.time() * 1000) % 1000000
-    parent_prim_path = articulation_prim.rstrip("/") or "/"
-    graph_specs = [
-        {"graph_path": f"{parent_prim_path}/MoveItBridgeRuntimeGraph_{ts}_0", "evaluator_name": "execution"},
-        {"graph_path": f"{parent_prim_path}/MoveItBridgeRuntimeGraph_{ts}_1", "evaluator_name": "execution"},
-    ]
-    if has_action_graph:
-        graph_specs.append({"graph_path": "/ActionGraph", "evaluator_name": "execution"})
+    # For dynamic cubes, clear residual velocity to avoid drift right after reset.
+    try:
+        rigid = UsdPhysics.RigidBodyAPI(prim)
+        vel_attr = rigid.GetVelocityAttr()
+        if not vel_attr.IsValid():
+            vel_attr = rigid.CreateVelocityAttr()
+        vel_attr.Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
-    node_setups = [
-        {
-            "prefix": "isaacsim.ros2.bridge",
-            "read_time": "omni.isaac.core_nodes.IsaacReadSimulationTime",
-            "art_ctrl": "omni.isaac.core_nodes.IsaacArticulationController",
-        },
-        {
-            "prefix": "omni.isaac.ros2_bridge",
-            "read_time": "omni.isaac.core_nodes.IsaacReadSimulationTime",
-            "art_ctrl": "omni.isaac.core_nodes.IsaacArticulationController",
-        },
-    ]
+        ang_attr = rigid.GetAngularVelocityAttr()
+        if not ang_attr.IsValid():
+            ang_attr = rigid.CreateAngularVelocityAttr()
+        ang_attr.Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    except Exception as exc:
+        print(f"[WARN] Demo cube rigid-body velocity reset skipped: {exc}")
 
-    for setup in node_setups:
-        ros2_prefix = setup["prefix"]
-        try:
-            for graph_spec in graph_specs:
-                try:
-                    suffix = int(time.time() * 1000) % 1000000
-                    og.Controller.edit(
-                        graph_spec,
-                        {
-                            keys.CREATE_NODES: [
-                                (f"RuntimeOnPlaybackTick_{suffix}", "omni.graph.action.OnPlaybackTick"),
-                                (f"RuntimeReadSimTime_{suffix}", setup["read_time"]),
-                                (f"RuntimeROS2Context_{suffix}", f"{ros2_prefix}.ROS2Context"),
-                                (f"RuntimePublishClock_{suffix}", f"{ros2_prefix}.ROS2PublishClock"),
-                                (f"RuntimePublishJointState_{suffix}", f"{ros2_prefix}.ROS2PublishJointState"),
-                                (f"RuntimeSubscribeJointState_{suffix}", f"{ros2_prefix}.ROS2SubscribeJointState"),
-                                (f"RuntimeArticulationController_{suffix}", setup["art_ctrl"]),
-                            ],
-                            keys.CONNECT: [
-                                (
-                                    f"RuntimeOnPlaybackTick_{suffix}.outputs:tick",
-                                    f"RuntimePublishClock_{suffix}.inputs:execIn",
-                                ),
-                                (
-                                    f"RuntimeOnPlaybackTick_{suffix}.outputs:tick",
-                                    f"RuntimePublishJointState_{suffix}.inputs:execIn",
-                                ),
-                                (
-                                    f"RuntimeOnPlaybackTick_{suffix}.outputs:tick",
-                                    f"RuntimeSubscribeJointState_{suffix}.inputs:execIn",
-                                ),
-                                (
-                                    f"RuntimeOnPlaybackTick_{suffix}.outputs:tick",
-                                    f"RuntimeArticulationController_{suffix}.inputs:execIn",
-                                ),
-                                (
-                                    f"RuntimeReadSimTime_{suffix}.outputs:simulationTime",
-                                    f"RuntimePublishClock_{suffix}.inputs:timeStamp",
-                                ),
-                                (
-                                    f"RuntimeROS2Context_{suffix}.outputs:context",
-                                    f"RuntimePublishClock_{suffix}.inputs:context",
-                                ),
-                                (
-                                    f"RuntimeROS2Context_{suffix}.outputs:context",
-                                    f"RuntimePublishJointState_{suffix}.inputs:context",
-                                ),
-                                (
-                                    f"RuntimeROS2Context_{suffix}.outputs:context",
-                                    f"RuntimeSubscribeJointState_{suffix}.inputs:context",
-                                ),
-                                (
-                                    f"RuntimeSubscribeJointState_{suffix}.outputs:jointNames",
-                                    f"RuntimeArticulationController_{suffix}.inputs:jointNames",
-                                ),
-                                (
-                                    f"RuntimeSubscribeJointState_{suffix}.outputs:positionCommand",
-                                    f"RuntimeArticulationController_{suffix}.inputs:positionCommand",
-                                ),
-                                (
-                                    f"RuntimeSubscribeJointState_{suffix}.outputs:velocityCommand",
-                                    f"RuntimeArticulationController_{suffix}.inputs:velocityCommand",
-                                ),
-                                (
-                                    f"RuntimeSubscribeJointState_{suffix}.outputs:effortCommand",
-                                    f"RuntimeArticulationController_{suffix}.inputs:effortCommand",
-                                ),
-                            ],
-                            keys.SET_VALUES: [
-                                (f"RuntimePublishClock_{suffix}.inputs:topicName", clock_topic),
-                                (f"RuntimePublishJointState_{suffix}.inputs:topicName", joint_state_topic),
-                                (f"RuntimeSubscribeJointState_{suffix}.inputs:topicName", joint_cmd_topic),
-                                (f"RuntimePublishJointState_{suffix}.inputs:targetPrim", [articulation_prim]),
-                                (f"RuntimeArticulationController_{suffix}.inputs:targetPrim", [articulation_prim]),
-                            ],
-                        },
-                    )
-                    print(f"[INFO] ROS2 bridge graph path: {graph_spec['graph_path']}")
-                    return True
-                except Exception:
-                    continue
-        except Exception:
-            continue
-
-    return False
+    return True, f"demo cube pose reset to {center_xyz}; {orient_msg}"
 
 
 def main() -> int:
@@ -926,7 +759,7 @@ def main() -> int:
     parser.add_argument(
         "--setup-ros2-joint-bridge",
         action="store_true",
-        help="Create /joint_commands <-> articulation <-> /joint_states bridge graph for MoveIt topic_based_ros2_control",
+        help="Deprecated: runtime graph creation is removed; keep ActionGraph inside USD and use --setup-ros2-python-bridge",
     )
     parser.add_argument(
         "--setup-ros2-python-bridge",
@@ -952,7 +785,7 @@ def main() -> int:
     parser.add_argument(
         "--clock-mode",
         type=str,
-        default="wall-anchored",
+        default="sim",
         choices=["wall-anchored", "sim"],
         help="Timestamp mode for /clock and /joint_states headers",
     )
@@ -997,12 +830,12 @@ def main() -> int:
     parser.add_argument(
         "--sync-mtc-demo-object",
         action="store_true",
-        help="Create/update demo cube in Isaac Sim so MTC PlanningScene object has scene counterpart",
+        help="Update existing demo object prim position only (no creation)",
     )
     parser.add_argument(
         "--demo-object-prim",
         type=str,
-        default="/World/demo_cube",
+        default="/Cube",
         help="USD prim path for demo cube in Isaac Sim",
     )
     parser.add_argument(
@@ -1026,12 +859,12 @@ def main() -> int:
     parser.add_argument(
         "--sync-demo-support-surface",
         action="store_true",
-        help="Create/update static support surface (table) collider under demo cube",
+        help="Update existing support surface prim position only (no creation)",
     )
     parser.add_argument(
         "--support-surface-prim",
         type=str,
-        default="/World/demo_table",
+        default="/Plane",
         help="USD prim path for support surface in Isaac Sim",
     )
     parser.add_argument(
@@ -1043,8 +876,8 @@ def main() -> int:
     parser.add_argument(
         "--support-surface-center",
         type=str,
-        default="",
-        help="Support surface center xyz in world frame. Empty means auto-place under demo cube.",
+        default="0.55,0.0,0.49",
+        help="Support surface center xyz in world frame. Keep this aligned with MTC support_surface_xyz.",
     )
     parser.add_argument(
         "--support-surface-color",
@@ -1069,39 +902,76 @@ def main() -> int:
         help="Enable CCD on demo cube rigid body to reduce tunneling",
     )
     parser.add_argument(
-        "--emulate-grasp-attachment",
-        action="store_true",
-        help="Emulate attach/detach in sim so demo cube follows hand when gripper closes nearby",
-    )
-    parser.add_argument(
-        "--grasp-hand-prim",
-        type=str,
-        default="",
-        help="Hand link prim used for attachment emulation (default: <articulation_prim>/panda_panda_hand)",
-    )
-    parser.add_argument(
-        "--grasp-finger-joint",
-        type=str,
-        default="panda_finger_joint1",
-        help="Finger joint used to infer open/close for attachment emulation",
-    )
-    parser.add_argument(
-        "--grasp-close-threshold",
+        "--demo-object-static-friction",
         type=float,
-        default=0.01,
-        help="Finger joint threshold at or below which grasp is considered closed",
+        default=1.2,
+        help="Demo cube static friction coefficient",
     )
     parser.add_argument(
-        "--grasp-open-threshold",
+        "--demo-object-dynamic-friction",
         type=float,
-        default=0.03,
-        help="Finger joint threshold at or above which grasp is considered open",
+        default=1.0,
+        help="Demo cube dynamic friction coefficient",
     )
     parser.add_argument(
-        "--grasp-attach-distance-threshold",
+        "--demo-object-restitution",
         type=float,
-        default=0.08,
-        help="Max hand-to-cube distance (m) to latch attachment when closing",
+        default=0.0,
+        help="Demo cube restitution coefficient",
+    )
+    parser.add_argument(
+        "--demo-object-linear-damping",
+        type=float,
+        default=1.0,
+        help="Demo cube linear damping for dynamic rigid body",
+    )
+    parser.add_argument(
+        "--demo-object-angular-damping",
+        type=float,
+        default=1.0,
+        help="Demo cube angular damping for dynamic rigid body",
+    )
+    parser.add_argument(
+        "--demo-object-contact-offset",
+        type=float,
+        default=0.005,
+        help="Demo cube collision contact offset (meters)",
+    )
+    parser.add_argument(
+        "--demo-object-rest-offset",
+        type=float,
+        default=0.0,
+        help="Demo cube collision rest offset (meters)",
+    )
+    parser.add_argument(
+        "--demo-object-solver-position-iterations",
+        type=int,
+        default=16,
+        help="Demo cube PhysX solver position iteration count",
+    )
+    parser.add_argument(
+        "--demo-object-solver-velocity-iterations",
+        type=int,
+        default=4,
+        help="Demo cube PhysX solver velocity iteration count",
+    )
+    parser.add_argument(
+        "--support-surface-static-friction",
+        type=float,
+        default=1.4,
+        help="Support surface static friction coefficient",
+    )
+    parser.add_argument(
+        "--support-surface-dynamic-friction",
+        type=float,
+        default=1.2,
+        help="Support surface dynamic friction coefficient",
+    )
+    parser.add_argument(
+        "--support-surface-restitution",
+        type=float,
+        default=0.0,
+        help="Support surface restitution coefficient",
     )
     parser.add_argument(
         "--initial-joint-positions-yaml",
@@ -1146,6 +1016,13 @@ def main() -> int:
     import omni.timeline
     import omni.usd
 
+    # Get the utility to enable extensions
+    from isaacsim.core.utils.extensions import enable_extension
+
+    # Enable the layers and stage windows in the UI
+    # enable_extension("omni.physx.supportui")
+    # enable_extension("omni.kit.widget.layers")
+
     graph_bridge_required = args.setup_ros2_joint_bridge
     if graph_bridge_required:
         enabled_bridge = _try_enable_ros2_bridge()
@@ -1186,51 +1063,35 @@ def main() -> int:
 
     if args.sync_mtc_demo_object:
         try:
-            demo_size = _parse_vec3(args.demo_object_size, "--demo-object-size")
             demo_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
-            demo_color = _parse_vec3(args.demo_object_color, "--demo-object-color")
-            _upsert_demo_cube(
+            ok, msg = _set_existing_prim_position(
                 stage=stage,
                 prim_path=args.demo_object_prim,
-                size_xyz=demo_size,
                 center_xyz=demo_center,
-                color_rgb=demo_color,
-                dynamic=args.demo_object_dynamic,
-                mass_kg=args.demo_object_mass_kg,
-                enable_ccd=args.demo_object_enable_ccd,
+                label="demo object",
             )
+            if not ok:
+                raise RuntimeError(msg)
+            print(f"[INFO] {msg}")
         except Exception as exc:
-            print(f"[ERROR] Failed to sync demo cube in Isaac Sim: {exc}")
+            print(f"[ERROR] Failed to update demo object position in Isaac Sim: {exc}")
             simulation_app.close()
             return 4
 
     if args.sync_demo_support_surface:
         try:
-            table_size = _parse_vec3(args.support_surface_size, "--support-surface-size")
-            table_color = _parse_vec3(args.support_surface_color, "--support-surface-color")
-
-            if args.support_surface_center.strip():
-                table_center = _parse_vec3(args.support_surface_center, "--support-surface-center")
-            elif args.sync_mtc_demo_object:
-                demo_size = _parse_vec3(args.demo_object_size, "--demo-object-size")
-                demo_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
-                table_center = (
-                    demo_center[0],
-                    demo_center[1],
-                    demo_center[2] - 0.3 * demo_size[2] - 0.3 * table_size[2],
-                )
-            else:
-                table_center = (0.55, 0.0, 0.52)
-
-            _upsert_support_surface(
+            table_center = _parse_vec3(args.support_surface_center, "--support-surface-center")
+            ok, msg = _set_existing_prim_position(
                 stage=stage,
                 prim_path=args.support_surface_prim,
-                size_xyz=table_size,
                 center_xyz=table_center,
-                color_rgb=table_color,
+                label="support surface",
             )
+            if not ok:
+                raise RuntimeError(msg)
+            print(f"[INFO] {msg}")
         except Exception as exc:
-            print(f"[ERROR] Failed to sync support surface in Isaac Sim: {exc}")
+            print(f"[ERROR] Failed to update support surface position in Isaac Sim: {exc}")
             simulation_app.close()
             return 5
 
@@ -1238,31 +1099,22 @@ def main() -> int:
         _inspect_graph_prims(stage)
 
     if args.setup_ros2_joint_bridge:
-        ok = _setup_ros2_joint_bridge_graph(
-            articulation_prim=args.articulation_prim,
-            joint_cmd_topic=args.joint_commands_topic,
-            joint_state_topic=args.joint_states_topic,
-            clock_topic=args.clock_topic,
-        )
-        if ok:
-            print("[INFO] ROS2 MoveIt joint bridge graph created")
-            print(
-                f"[INFO] Bridge topics: cmd={args.joint_commands_topic}, state={args.joint_states_topic}, clock={args.clock_topic}"
-            )
-        else:
-            print("[WARN] Failed to create ROS2 MoveIt joint bridge graph. Scene will still run.")
+        print("[WARN] --setup-ros2-joint-bridge is deprecated in this script. Runtime ActionGraph creation has been removed.")
+        print("[INFO] Please keep ActionGraph in USD, or use --setup-ros2-python-bridge for ROS2 topics.")
 
     python_bridge = None
-    attachment_emulator = None
 
     def reset_demo_cube_cb() -> tuple[bool, str]:
-        cube_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
-        ok = _set_prim_world_translation(stage, args.demo_object_prim, np.array(cube_center, dtype=np.float64))
-        if not ok:
-            return False, f"failed to set demo cube transform: {args.demo_object_prim}"
-        if attachment_emulator is not None:
-            attachment_emulator.reset()
-        return True, f"demo cube reset to {cube_center}"
+        try:
+            cube_center = _parse_vec3(args.demo_object_pick_position, "--demo-object-pick-position")
+            ok, msg = _reset_demo_cube_transform_and_dynamics(
+                stage=stage,
+                prim_path=args.demo_object_prim,
+                center_xyz=cube_center,
+            )
+            return ok, msg
+        except Exception as exc:
+            return False, f"demo cube reset exception: {exc}"
 
     timeline = omni.timeline.get_timeline_interface()
     timeline.play()
@@ -1289,32 +1141,12 @@ def main() -> int:
         )
         python_bridge.start()
 
-        if args.sync_mtc_demo_object and args.emulate_grasp_attachment:
-            hand_prim = args.grasp_hand_prim.strip()
-            if not hand_prim:
-                hand_prim = f"{args.articulation_prim.rstrip('/')}/panda_panda_hand"
-            attachment_emulator = _DemoObjectAttachmentEmulator(
-                stage=stage,
-                cube_prim=args.demo_object_prim,
-                hand_prim=hand_prim,
-                close_threshold=args.grasp_close_threshold,
-                open_threshold=args.grasp_open_threshold,
-                attach_distance_threshold=args.grasp_attach_distance_threshold,
-            )
-            print(
-                "[INFO] Attachment emulation enabled: "
-                f"cube={args.demo_object_prim}, hand={hand_prim}, finger_joint={args.grasp_finger_joint}"
-            )
-
     app = omni.kit.app.get_app()
     for i in range(args.steps):
         app.update()
         if python_bridge is not None:
             sim_time_s = timeline.get_current_time()
             python_bridge.step(sim_time_s=sim_time_s, sim_step=i)
-            if attachment_emulator is not None:
-                finger_pos = python_bridge.get_joint_position(args.grasp_finger_joint)
-                attachment_emulator.step(finger_pos=finger_pos)
         if i % max(1, args.render_interval) == 0:
             print(f"[SIM] step={i}")
 

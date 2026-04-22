@@ -1,55 +1,86 @@
 # Architecture Overview
 
-## 1. 当前系统边界
+## 1. 系统目标
 
-- Simulator: NVIDIA Isaac Sim (`sim/launch/run_combined_car_franka_headless.py`)
-- Planner: MoveIt2 + MTC
-- Middleware: ROS2 Humble
+本项目用于验证 Isaac Sim 与 MoveIt2/MTC 的抓放闭环：
 
-当前主链路聚焦机械臂抓放联动：
+Isaac Sim 负责物理执行与传感状态，MoveIt/MTC 负责规划与任务编排。
 
-`IsaacSim (joint states/clock) -> MoveIt/MTC plan -> ros2_control command -> IsaacSim`
+## 2. 主链路（当前有效）
 
-## 2. 关键组件
+`Isaac Sim (timeline sim time + physics) -> ROS2 bridge (/clock /joint_states /joint_commands) -> MoveIt2/MTC planning+execute -> ros2_control -> Isaac Sim articulation`
 
-- `ros2_ws/src/robot_description`
-  - 机器人模型与 USD/URDF 资源源头。
+关键原则：
+
+- `/clock` 必须发布真实仿真时间（sim time），不能使用 wall-clock 锚定时间。
+- MoveIt、MTC、TF、ros2_control 统一启用 `use_sim_time=true`。
+- 规划场景与仿真场景同时维护同一套抓取物体与支撑面参数。
+
+## 3. 组件与职责
+
+### 3.1 仿真层
+
+- `sim/launch/run_combined_car_franka_headless.py`
+  - 启动 Isaac Sim（GUI/headless）。
+  - 发布 `/joint_states`、`/clock`，订阅 `/joint_commands`。
+  - 创建/更新 demo cube 与 support surface 的物理属性（质量、摩擦、阻尼、CCD、接触偏置、求解迭代）。
+  - 提供 reset 服务：
+    - `/isaac/reset_demo_cube`
+    - `/isaac/reset_robot_initial_pose`
+    - `/isaac/reset_demo_scene`
+
+- `sim/launch/config/sim_default.yaml`
+  - 仿真默认参数源。
+  - 当前默认：`clock_mode: sim`。
+
+### 3.2 MoveIt 配置层
 
 - `ros2_ws/src/moveit_robot_config`
-  - MoveIt2 配置与 launch。
-  - 提供 `isaac_sim_moveit.launch.py`（含 controller 启停稳定化参数）。
+  - 提供 `isaac_sim_moveit.launch.py`。
+  - 启动 `move_group`、`robot_state_publisher`、`static_transform_publisher`、`ros2_control_node` 与 controller spawners。
+  - 默认开启 `use_sim_time` 与 `use_sim_time_for_control`。
+
+### 3.3 MTC 任务层
 
 - `ros2_ws/src/moveit_mtc_pick_place_demo`
-  - MTC 教程风格 pick and place 示例。
-  - 包含 stage 流程、参数覆盖和 RViz MTC 可视化。
+  - 任务节点 `mtc_pick_place_demo`。
+  - `Task` 和 `Solution` 成员缓存复用：
+    - 首次构建 pipeline 并 plan。
+    - 后续 run 可复用 cached solution execute。
+    - reset 清空缓存并重置任务状态。
+  - 服务接口：
+    - `/mtc_pick_place_demo/run_task`（兼容 `/run_task`）
+    - `/mtc_pick_place_demo/reset_task_state`（兼容 `/reset_task_state`）
+    - `/mtc_pick_place_demo/reset_and_run`（兼容 `/reset_and_run`）
 
-- `ros2_ws/src/moveit_task_constructor`
-  - 官方 MTC 源码依赖和示例参考。
+## 4. 碰撞与物理分工
 
-- `sim/launch`
-  - Isaac Sim 启动、桥接和诊断脚本。
-  - 已支持在仿真中同步 demo cube（对齐 MTC CollisionObject）。
+- MoveIt/MTC：规划期碰撞检查（PlanningScene）。
+- Isaac Sim：执行期接触、摩擦、刚体动力学。
 
-## 3. 碰撞职责分工
+抓取稳定性的必要条件：
 
-- MoveIt/MTC: 规划期碰撞检查（PlanningScene）。
-- Isaac Sim: 执行期物理碰撞与接触响应。
+- demo cube 必须是动态刚体（dynamic rigid body）。
+- cube 与 table 必须是 collider，并绑定 physics material。
+- cube 推荐启用 CCD、阻尼、合理接触偏置与求解迭代。
 
-为了确保规划与执行一致，需要双场景对齐：
+## 5. 运行与调试入口
 
-1. MTC 添加 CollisionObject。
-2. Isaac Sim 场景创建同 pose/size 的真实物体。
+- 仿真启动：`sim/launch/run_combined_car_franka_headless.py`
+- MoveIt 启动：`ros2_ws/scripts/run_moveit_isaac_test.py`
+- MTC 启动：`ros2_ws/scripts/run_mtc_demo.py`
 
-## 4. 已知稳定策略
+推荐顺序：
 
-- `use_sim_time_for_control:=false` 避免控制栈时钟抖动。
-- spawner 延迟与超时参数降低 `/controller_manager` 竞态。
-- MTC launch 显式注入 `robot_description*`，规避 SRDF 空加载。
+1. 启动仿真（先有 `/clock` 与 `/joint_states`）。
+2. 启动 MoveIt。
+3. 启动 MTC 并触发服务执行。
 
-## 5. 文档索引（交接入口）
+## 6. 文档索引
 
-- 项目 README: `../README.md`
-- ROS2 工作区 README: `../ros2_ws/README.md`
-- 仿真与桥接 README: `../sim/launch/README.md`
-- MTC demo README: `../ros2_ws/src/moveit_mtc_pick_place_demo/README.md`
-- 任务记录: `TASK_RECORD.md`
+- 项目总览：`README.md`
+- 环境与强制规则：`docs/ENV_PROJECT_KNOWLEDGE.md`
+- 调试记录：`docs/TASK_RECORD.md`
+- 仿真说明：`sim/launch/README.md`
+- MoveIt 说明：`ros2_ws/src/moveit_robot_config/README.md`
+- MTC 说明：`ros2_ws/src/moveit_mtc_pick_place_demo/README.md`

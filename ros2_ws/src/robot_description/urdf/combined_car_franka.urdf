@@ -215,7 +215,7 @@
     <parent link="panda_panda_hand"/>
     <child link="panda_panda_rightfinger"/>
     <axis xyz="1. 0. 0."/>
-    <limit lower="0." upper="0.04" effort="0." velocity="10."/>
+    <limit lower="0." upper="0.04" effort="7.1999998" velocity="0.2"/>
     <mimic joint="panda_finger_joint1" />
   </joint>
   <joint name="panda_hand_joint" type="fixed">

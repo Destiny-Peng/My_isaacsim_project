@@ -2,7 +2,7 @@ launch:
   ros2_control_hardware_type: isaac
   use_sim_time: true
   launch_rviz: true
-  use_sim_time_for_control: false
+  use_sim_time_for_control: true
   controller_manager_timeout: 60.0
   controller_spawn_delay: 5.0
   spawn_aux_controllers: true

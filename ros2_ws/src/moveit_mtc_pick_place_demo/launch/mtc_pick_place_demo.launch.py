@@ -18,10 +18,6 @@ def generate_launch_description():
     controller_spawn_delay = LaunchConfiguration("controller_spawn_delay")
     controller_manager_timeout = LaunchConfiguration("controller_manager_timeout")
     mtc_start_delay = LaunchConfiguration("mtc_start_delay")
-    enable_gripper_actions = LaunchConfiguration("enable_gripper_actions")
-    enable_initial_open_hand_stage = LaunchConfiguration("enable_initial_open_hand_stage")
-    enable_move_to_pick_stage = LaunchConfiguration("enable_move_to_pick_stage")
-    enable_move_to_place_stage = LaunchConfiguration("enable_move_to_place_stage")
     execute = LaunchConfiguration("execute")
     spawn_aux_controllers = LaunchConfiguration("spawn_aux_controllers")
     launch_mtc_rviz = LaunchConfiguration("launch_mtc_rviz")
@@ -93,10 +89,6 @@ def generate_launch_description():
                 "object_size_x": object_size_x,
                 "object_size_y": object_size_y,
                 "object_size_z": object_size_z,
-                "enable_gripper_actions": enable_gripper_actions,
-                "enable_initial_open_hand_stage": enable_initial_open_hand_stage,
-                "enable_move_to_pick_stage": enable_move_to_pick_stage,
-                "enable_move_to_place_stage": enable_move_to_place_stage,
                 "execute": execute,
             },
         ],
@@ -131,14 +123,10 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
-            DeclareLaunchArgument("use_sim_time_for_control", default_value="false"),
+            DeclareLaunchArgument("use_sim_time_for_control", default_value="true"),
             DeclareLaunchArgument("controller_spawn_delay", default_value="5.0"),
             DeclareLaunchArgument("controller_manager_timeout", default_value="60.0"),
             DeclareLaunchArgument("mtc_start_delay", default_value="8.0"),
-            DeclareLaunchArgument("enable_gripper_actions", default_value="false"),
-            DeclareLaunchArgument("enable_initial_open_hand_stage", default_value="false"),
-            DeclareLaunchArgument("enable_move_to_pick_stage", default_value="true"),
-            DeclareLaunchArgument("enable_move_to_place_stage", default_value="true"),
             DeclareLaunchArgument("execute", default_value="true"),
             DeclareLaunchArgument("spawn_aux_controllers", default_value="true"),
             DeclareLaunchArgument("launch_mtc_rviz", default_value="true"),

@@ -10,18 +10,12 @@ mtc_pick_place_demo:
     pregrasp: open
     grasp: close
     task_timeout_sec: 180.0
-    enable_initial_open_hand_stage: true
-    enable_move_to_pick_stage: true
-    enable_move_to_place_stage: true
-    enable_retreat_after_place_stage: true
-    enable_forbid_hand_object_collision_after_place: false
-    enable_move_home_stage: false
     execute: true
     keep_alive_after_execute_failure: true
     auto_run_on_start: true
 
-    pick_pose_xyz: [0.55, 0.0, 0.70]
-    place_pose_xyz: [0.55, 0.0, 0.70]
+    pick_pose_xyz: [0.55, 0.0, 0.60]
+    place_pose_xyz: [0.55, 0.0, 0.60]
 
     object_size_xyz: [0.04, 0.04, 0.12]
     support_surface_xyz: [0.55, 0.0, 0.49]
@@ -34,12 +28,18 @@ mtc_pick_place_demo:
     grasp_max_ik_solutions: 4
     grasp_ik_ignore_collisions: true
     additional_allowed_collision_links: [panda_panda_link7, panda_panda_link6]
-    enable_allow_grasp_collision_stage: true
-
+    #---上面的参数不要改动，下面的参数可以根据需要调整---
+    goal_joint_tolerance: 0.00001
     approach_min_distance: 0.0
-    approach_distance: 0.12
+    approach_distance: 0.10
+    lift_min_distance: 0.005
     lift_distance: 0.12
+    place_lower_min_distance: 0.0
+    place_lower_distance: 0.13
     place_retreat_distance: 0.03
-    plan_velocity_scaling: 0.2
-    plan_acceleration_scaling: 0.2
-    cartesian_step_size: 0.01
+    move_to_pick_timeout_sec: 15.0
+    move_to_place_timeout_sec: 5.0
+    plan_velocity_scaling: 0.1
+    plan_acceleration_scaling: 0.1
+    cartesian_step_size: 0.005
+    place_max_ik_solutions: 4
