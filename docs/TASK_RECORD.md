@@ -14,6 +14,8 @@
 - 外部 pick/place 话题采用一次性消费语义，旧消息不会持续触发重规划。
 - 放置阶段碰撞时机已调整，避免回撤路径继续允许 hand 和 object 相交。
 - RViz 配置已缩减为单个 `Motion Planning Tasks` 实例，避免同名面板/显示项让人误以为创建了两个 task。
+- 新增 `sim/launch/grasp_metric_evaluator.py`：使用 Replicator annotator 记录对象/夹爪时序数据，并计算 success、stability、slippage 指标。
+- `run_combined_car_franka_headless.py` 已集成 grasp evaluator：可在同一仿真试验中自动录制并输出 CSV/JSON 指标结果。
 
 ## 3. 近期验证结果
 

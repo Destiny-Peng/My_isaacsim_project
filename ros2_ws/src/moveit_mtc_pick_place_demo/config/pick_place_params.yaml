@@ -12,12 +12,12 @@ mtc_pick_place_demo:
     task_timeout_sec: 180.0
     execute: true
 
-    pick_pose_xyz: [0.387, -0.233, 0.70]
+    pick_pose_xyz: [0.55, 0.0, 0.70]
     place_pose_xyz: [0.55, 0.2, 0.70]
 
     object_size_xyz: [0.02, 0.02, 0.12]
-    support_surface_xyz: [0.55, 0.0, 0.61]
-    support_surface_size_xyz: [0.8, 0.8, 0.05]
+    support_surface_xyz: [0.55, 0.0, 0.60]
+    support_surface_size_xyz: [0.8, 0.8, 0.06]
     grasp_x_offset: -0.1
     grasp_y_offset: 0.0
     grasp_z_offset: 0.0

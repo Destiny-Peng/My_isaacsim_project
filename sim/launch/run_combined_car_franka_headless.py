@@ -9,6 +9,8 @@ Usage example:
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
 import urllib.parse
 import sys
@@ -751,6 +753,107 @@ def _reset_demo_cube_transform_and_dynamics(
     return True, f"demo cube pose reset to {center_xyz}; {orient_msg}"
 
 
+def _save_metrics_frame_csv(frame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if hasattr(frame, "to_csv"):
+        frame.to_csv(output_path, index=False)
+        return
+
+    if isinstance(frame, np.ndarray) and frame.dtype.names:
+        field_names = list(frame.dtype.names)
+        with output_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(field_names)
+            for row in frame:
+                writer.writerow([row[name] for name in field_names])
+        return
+
+    raise TypeError(f"Unsupported frame type for CSV export: {type(frame)}")
+
+
+_GRASP_METRICS_FIELD_NAMES = [
+    "sim_time_s",
+    "wall_time_s",
+    "object_x",
+    "object_y",
+    "object_z",
+    "object_vx",
+    "object_vy",
+    "object_vz",
+    "gripper_x",
+    "gripper_y",
+    "gripper_z",
+    "gripper_vx",
+    "gripper_vy",
+    "gripper_vz",
+    "contact_gripper",
+    "contact_table",
+    "gripper_closed",
+    "sample_index",
+]
+
+
+def _append_metrics_rows_csv(rows: list[dict], output_path: Path) -> int:
+    if not rows:
+        return 0
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = (not output_path.exists()) or output_path.stat().st_size == 0
+
+    with output_path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(_GRASP_METRICS_FIELD_NAMES)
+        for row in rows:
+            writer.writerow([row.get(name) for name in _GRASP_METRICS_FIELD_NAMES])
+
+    return len(rows)
+
+
+def _build_grasp_eval_output_paths(
+    workspace_root: Path,
+    output_csv_arg: str,
+    output_json_arg: str,
+    output_prefix_arg: str,
+) -> tuple[Path, Path]:
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    default_base = workspace_root / "sim" / "outputs" / f"grasp_eval_{timestamp}"
+
+    if output_prefix_arg:
+        base = Path(output_prefix_arg).expanduser()
+        if not base.is_absolute():
+            base = workspace_root / base
+    else:
+        base = default_base
+
+    if output_csv_arg:
+        csv_path = Path(output_csv_arg).expanduser()
+        if not csv_path.is_absolute():
+            csv_path = workspace_root / csv_path
+    else:
+        csv_path = base.with_suffix(".csv")
+
+    if output_json_arg:
+        json_path = Path(output_json_arg).expanduser()
+        if not json_path.is_absolute():
+            json_path = workspace_root / json_path
+    else:
+        json_path = base.with_suffix(".json")
+
+    csv_path_resolved = csv_path.resolve()
+    json_path_resolved = json_path.resolve()
+
+    try:
+        csv_path_resolved.parent.mkdir(parents=True, exist_ok=True)
+        json_path_resolved.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[DEBUG] Grasp evaluator output directory created: {csv_path_resolved.parent}")
+    except Exception as e:
+        print(f"[WARN] Failed to pre-create output directory: {e}")
+
+    return csv_path_resolved, json_path_resolved
+
+
 def main() -> int:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--param-file", type=str, default="", help="YAML file with default launch parameters")
@@ -860,10 +963,109 @@ def main() -> int:
         default=(Path(__file__).resolve().parents[2] / "ros2_ws/src/moveit_robot_config/config/initial_positions.yaml").as_posix(),
         help="YAML file with initial joint positions to apply at IsaacSim startup/reset",
     )
+    parser.add_argument(
+        "--enable-grasp-metric-eval",
+        action="store_true",
+        help="Enable Replicator-based object grasp metric recording and evaluation",
+    )
+    parser.add_argument(
+        "--grasp-eval-object-prim",
+        type=str,
+        default="",
+        help="Object prim path used by grasp evaluator (default: demo_object_prim)",
+    )
+    parser.add_argument(
+        "--grasp-eval-gripper-prim",
+        type=str,
+        default="/mobile_base_with_franka/panda_panda_hand",
+        help="Gripper prim path used by grasp evaluator",
+    )
+    parser.add_argument(
+        "--grasp-eval-table-prim",
+        type=str,
+        default="",
+        help="Table prim path used by grasp evaluator (default: support_surface_prim)",
+    )
+    parser.add_argument(
+        "--grasp-eval-target-z",
+        type=float,
+        default=None,
+        help="Target Z for success metric; defaults to object initial Z when omitted",
+    )
+    parser.add_argument(
+        "--grasp-eval-gripper-joint-name",
+        type=str,
+        default="panda_finger_joint1",
+        help="Joint name used to infer whether gripper is closed",
+    )
+    parser.add_argument(
+        "--grasp-eval-gripper-close-threshold",
+        type=float,
+        default=0.015,
+        help="Gripper is treated as closed when finger joint position is <= this value",
+    )
+    parser.add_argument(
+        "--grasp-eval-slip-threshold",
+        type=float,
+        default=-0.02,
+        help="Negative delta-vz threshold for slip detection",
+    )
+    parser.add_argument(
+        "--grasp-eval-hold-start",
+        type=float,
+        default=None,
+        help="Optional hold window start time in seconds",
+    )
+    parser.add_argument(
+        "--grasp-eval-hold-end",
+        type=float,
+        default=None,
+        help="Optional hold window end time in seconds",
+    )
+    parser.add_argument(
+        "--grasp-eval-output-prefix",
+        type=str,
+        default="sim/outputs/grasp_eval",
+        help="Output prefix for evaluator artifacts when explicit csv/json paths are not set",
+    )
+    parser.add_argument(
+        "--grasp-eval-output-csv",
+        type=str,
+        default="",
+        help="Optional explicit CSV output path for recorded samples",
+    )
+    parser.add_argument(
+        "--grasp-eval-output-json",
+        type=str,
+        default="",
+        help="Optional explicit JSON output path for computed metrics",
+    )
+    parser.add_argument(
+        "--grasp-eval-csv-flush-interval",
+        type=int,
+        default=500,
+        help="Append newly recorded grasp-eval rows to CSV every N simulation steps",
+    )
     if yaml_defaults:
         parser.set_defaults(**yaml_defaults)
 
     args = parser.parse_args()
+
+    grasp_eval_csv_output_path = None
+    grasp_eval_json_output_path = None
+
+    if args.enable_grasp_metric_eval:
+        workspace_root = Path(__file__).resolve().parents[2]
+        preview_csv_path, preview_json_path = _build_grasp_eval_output_paths(
+            workspace_root=workspace_root,
+            output_csv_arg=args.grasp_eval_output_csv,
+            output_json_arg=args.grasp_eval_output_json,
+            output_prefix_arg=args.grasp_eval_output_prefix,
+        )
+        grasp_eval_csv_output_path = preview_csv_path
+        grasp_eval_json_output_path = preview_json_path
+        print(f"[INFO] Grasp evaluator output CSV (planned): {preview_csv_path}")
+        print(f"[INFO] Grasp evaluator output JSON (planned): {preview_json_path}")
 
     def cfg(name: str, default):
         return getattr(args, name, default)
@@ -995,6 +1197,7 @@ def main() -> int:
         print("[INFO] Please keep ActionGraph in USD, or use --setup-ros2-python-bridge for ROS2 topics.")
 
     python_bridge = None
+    grasp_evaluator = None
 
     def reset_demo_cube_cb() -> tuple[bool, str]:
         try:
@@ -1033,14 +1236,112 @@ def main() -> int:
         )
         python_bridge.start()
 
+    if args.enable_grasp_metric_eval:
+        try:
+            enable_extension("omni.replicator.core")
+        except Exception as exc:
+            print(f"[ERROR] Failed to enable omni.replicator.core extension: {exc}")
+            if python_bridge is not None:
+                python_bridge.shutdown()
+            timeline.stop()
+            simulation_app.close()
+            return 6
+
+        try:
+            from grasp_metric_evaluator import GraspMetricEvaluator
+
+            eval_object_prim = args.grasp_eval_object_prim or demo_object_prim
+            eval_table_prim = args.grasp_eval_table_prim or support_surface_prim
+            grasp_evaluator = GraspMetricEvaluator(
+                object_prim_path=eval_object_prim,
+                gripper_prim_path=args.grasp_eval_gripper_prim,
+                table_prim_path=eval_table_prim,
+                slippage_velocity_drop_threshold=args.grasp_eval_slip_threshold,
+            )
+            if args.grasp_eval_hold_start is not None and args.grasp_eval_hold_end is not None:
+                grasp_evaluator.set_hold_window(args.grasp_eval_hold_start, args.grasp_eval_hold_end)
+            grasp_evaluator.start_recording(clear_previous=True)
+            print(
+                "[INFO] Grasp evaluator started: "
+                f"object={eval_object_prim}, gripper={args.grasp_eval_gripper_prim}, table={eval_table_prim}"
+            )
+        except Exception as exc:
+            print(f"[ERROR] Failed to initialize grasp evaluator: {exc}")
+            if python_bridge is not None:
+                python_bridge.shutdown()
+            timeline.stop()
+            simulation_app.close()
+            return 7
+
+    grasp_eval_rows_written = 0
+    grasp_eval_flush_interval = max(1, int(args.grasp_eval_csv_flush_interval))
+
     app = omni.kit.app.get_app()
     for i in range(args.steps):
         app.update()
+
+        sim_time_s = i * sim_dt
         if python_bridge is not None:
-            sim_time_s = i * sim_dt
             python_bridge.step(sim_time_s=sim_time_s, sim_step=i)
+
+        if grasp_evaluator is not None and python_bridge is not None:
+            finger_position = python_bridge.get_joint_position(args.grasp_eval_gripper_joint_name)
+            if finger_position is not None:
+                grasp_evaluator.set_gripper_closed(finger_position <= args.grasp_eval_gripper_close_threshold)
+
+        if (
+            grasp_evaluator is not None
+            and grasp_eval_csv_output_path is not None
+            and ((i + 1) % grasp_eval_flush_interval == 0)
+        ):
+            new_rows = grasp_evaluator.get_records_slice(grasp_eval_rows_written)
+            appended = _append_metrics_rows_csv(new_rows, grasp_eval_csv_output_path)
+            if appended > 0:
+                grasp_eval_rows_written += appended
+                print(
+                    "[INFO] Grasp evaluator CSV incremental flush: "
+                    f"+{appended} rows (total_written={grasp_eval_rows_written})"
+                )
+
         if i % max(1, args.render_interval) == 0:
             print(f"[SIM] step={i}")
+
+    if grasp_evaluator is not None:
+        try:
+            grasp_evaluator.stop_recording(as_dataframe=False)
+
+            if grasp_eval_csv_output_path is not None:
+                remaining_rows = grasp_evaluator.get_records_slice(grasp_eval_rows_written)
+                appended = _append_metrics_rows_csv(remaining_rows, grasp_eval_csv_output_path)
+                if appended > 0:
+                    grasp_eval_rows_written += appended
+                    print(
+                        "[INFO] Grasp evaluator CSV final flush: "
+                        f"+{appended} rows (total_written={grasp_eval_rows_written})"
+                    )
+
+            default_target_z = _parse_vec3(demo_object_pick_position, "demo_object_pick_position")[2]
+            target_z = args.grasp_eval_target_z if args.grasp_eval_target_z is not None else default_target_z
+            metrics_result = grasp_evaluator.compute_metrics(target_z=float(target_z))
+
+            if grasp_eval_json_output_path is None:
+                raise RuntimeError("Grasp evaluator JSON output path was not initialized")
+            grasp_eval_json_output_path.parent.mkdir(parents=True, exist_ok=True)
+            with grasp_eval_json_output_path.open("w", encoding="utf-8") as f:
+                json.dump(metrics_result.as_dict(), f, indent=2)
+
+            if grasp_eval_csv_output_path is not None:
+                print(f"[INFO] Grasp evaluator samples written: {grasp_eval_csv_output_path}")
+            print(f"[INFO] Grasp evaluator metrics written: {grasp_eval_json_output_path}")
+            print(f"[DEBUG] Output prefix arg: {args.grasp_eval_output_prefix}")
+            print(f"[INFO] Grasp evaluator result: {metrics_result.as_dict()}")
+        except Exception as exc:
+            print(f"[ERROR] Failed to finalize grasp evaluator output: {exc}")
+            if python_bridge is not None:
+                python_bridge.shutdown()
+            timeline.stop()
+            simulation_app.close()
+            return 8
 
     timeline.stop()
     if python_bridge is not None:

@@ -67,6 +67,38 @@ python3 sim/launch/run_combined_car_franka_headless.py \
 - `/isaac/reset_robot_initial_pose`：只重置机械臂到 `initial_positions.yaml`
 - `/isaac/reset_demo_scene`：同时重置 cube + 机械臂
 
+抓取指标评估（新增）：
+
+- `grasp_metric_evaluator.py` 提供 `GraspMetricEvaluator`。
+- 它使用 Replicator `pose` / `contact` annotator 记录对象和夹爪的时序数据，不依赖 `pxr.UsdGeom` 手工算位姿。
+- 已接入 `run_combined_car_franka_headless.py` 主循环，可在一次仿真中自动完成记录和评估。
+- 默认通过 `grasp_eval.*` 配置段控制。
+- 输出：
+  - 样本时序 CSV（`sim_time_s`、`object_xyz`、`object_vxyz`、接触状态、gripper_closed）
+  - 指标 JSON（`success`、`stability_z_std`、`slippage_detected` 等）
+- `to_dataframe()` 会优先返回 `pandas.DataFrame`；如果环境里没有 pandas，则回退为 NumPy 结构化数组。
+
+开启录制与评估示例：
+
+```bash
+cd /home/jacy/project/isaac_test/isaac_sim_fullstack
+python3 sim/launch/run_combined_car_franka_headless.py \
+  --param-file sim/launch/config/sim_default.yaml \
+  --enable-grasp-metric-eval \
+  --grasp-eval-target-z 0.62 \
+  --grasp-eval-output-prefix sim/outputs/grasp_eval_trial1
+```
+
+可选关键参数：
+
+- `--grasp-eval-object-prim`：被抓取物体 prim
+- `--grasp-eval-gripper-prim`：夹爪 prim
+- `--grasp-eval-table-prim`：支撑面 prim
+- `--grasp-eval-gripper-joint-name`：用于判断夹爪闭合的关节名
+- `--grasp-eval-gripper-close-threshold`：闭合阈值
+- `--grasp-eval-slip-threshold`：滑移检测阈值
+- `--grasp-eval-output-csv` / `--grasp-eval-output-json`：显式输出路径
+
 命令示例：
 
 ```bash
