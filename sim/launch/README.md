@@ -59,6 +59,7 @@ python3 sim/launch/run_combined_car_franka_headless.py \
 - 原先用于运行时创建/调物理属性的一组参数已移除（size/color/dynamic/mass/friction/damping/contact offset/solver iterations）。
 - 历史参数 `simulation.gui` 已废弃；若旧 YAML 仍包含该字段，脚本会做兼容映射并给出告警，建议改为 `simulation.headless`。
 - `/clock` 发布改为 ROS2 标准 clock QoS，减少 `ros2 topic echo /clock --once` 场景下的丢包提示。
+- 当前脚本继续清理了未使用的辅助函数，保留的代码只对应 bridge、reset 和现有 prim 同步路径。
 
 运行时服务（由 Python bridge 提供）：
 

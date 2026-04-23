@@ -18,19 +18,9 @@ def generate_launch_description():
     controller_spawn_delay = LaunchConfiguration("controller_spawn_delay")
     controller_manager_timeout = LaunchConfiguration("controller_manager_timeout")
     mtc_start_delay = LaunchConfiguration("mtc_start_delay")
-    execute = LaunchConfiguration("execute")
     spawn_aux_controllers = LaunchConfiguration("spawn_aux_controllers")
     launch_mtc_rviz = LaunchConfiguration("launch_mtc_rviz")
     mtc_rviz_config = LaunchConfiguration("mtc_rviz_config")
-    pick_x = LaunchConfiguration("pick_x")
-    pick_y = LaunchConfiguration("pick_y")
-    pick_z = LaunchConfiguration("pick_z")
-    place_x = LaunchConfiguration("place_x")
-    place_y = LaunchConfiguration("place_y")
-    place_z = LaunchConfiguration("place_z")
-    object_size_x = LaunchConfiguration("object_size_x")
-    object_size_y = LaunchConfiguration("object_size_y")
-    object_size_z = LaunchConfiguration("object_size_z")
 
     moveit_config = (
         MoveItConfigsBuilder("mobile_base_with_franka", package_name="moveit_robot_config")
@@ -80,16 +70,6 @@ def generate_launch_description():
             moveit_config.joint_limits,
             {
                 "use_sim_time": use_sim_time,
-                "pick_x": pick_x,
-                "pick_y": pick_y,
-                "pick_z": pick_z,
-                "place_x": place_x,
-                "place_y": place_y,
-                "place_z": place_z,
-                "object_size_x": object_size_x,
-                "object_size_y": object_size_y,
-                "object_size_z": object_size_z,
-                "execute": execute,
             },
         ],
     )
@@ -127,7 +107,6 @@ def generate_launch_description():
             DeclareLaunchArgument("controller_spawn_delay", default_value="5.0"),
             DeclareLaunchArgument("controller_manager_timeout", default_value="60.0"),
             DeclareLaunchArgument("mtc_start_delay", default_value="8.0"),
-            DeclareLaunchArgument("execute", default_value="true"),
             DeclareLaunchArgument("spawn_aux_controllers", default_value="true"),
             DeclareLaunchArgument("launch_mtc_rviz", default_value="true"),
             DeclareLaunchArgument(
@@ -138,15 +117,6 @@ def generate_launch_description():
                     "mtc_pick_place.rviz",
                 ),
             ),
-            DeclareLaunchArgument("pick_x", default_value="0.55"),
-            DeclareLaunchArgument("pick_y", default_value="0.0"),
-            DeclareLaunchArgument("pick_z", default_value="0.20"),
-            DeclareLaunchArgument("place_x", default_value="0.45"),
-            DeclareLaunchArgument("place_y", default_value="-0.25"),
-            DeclareLaunchArgument("place_z", default_value="0.20"),
-            DeclareLaunchArgument("object_size_x", default_value="0.04"),
-            DeclareLaunchArgument("object_size_y", default_value="0.04"),
-            DeclareLaunchArgument("object_size_z", default_value="0.12"),
             moveit_launch,
             mtc_rviz_node,
             delayed_mtc_node,

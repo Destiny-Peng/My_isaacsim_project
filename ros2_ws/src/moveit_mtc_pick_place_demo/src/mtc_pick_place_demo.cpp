@@ -14,13 +14,10 @@
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/planning_scene.hpp>
-#include <sensor_msgs/msg/joint_state.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <std_srvs/srv/trigger.hpp>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -32,6 +29,20 @@ namespace mtc = moveit::task_constructor;
 
 namespace
 {
+    geometry_msgs::msg::PoseStamped makePoseStampedFromXYZ(const std::string &frame_id, const std::vector<double> &xyz)
+    {
+        geometry_msgs::msg::PoseStamped pose;
+        pose.header.frame_id = frame_id;
+        pose.pose.orientation.w = 1.0;
+        if (xyz.size() == 3)
+        {
+            pose.pose.position.x = xyz[0];
+            pose.pose.position.y = xyz[1];
+            pose.pose.position.z = xyz[2];
+        }
+        return pose;
+    }
+
     Eigen::Isometry3d makeGraspFrameTransform(double x, double y, double z, const std::vector<double> &rpy)
     {
         Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
@@ -106,41 +117,16 @@ public:
         pick_xyz_ = this->declare_parameter<std::vector<double>>("pick_pose_xyz", std::vector<double>{0.55, 0.0, 0.20});
         place_xyz_ = this->declare_parameter<std::vector<double>>("place_pose_xyz", std::vector<double>{0.45, -0.25, 0.20});
         object_size_xyz_ = this->declare_parameter<std::vector<double>>("object_size_xyz", std::vector<double>{0.04, 0.04, 0.12});
-        support_surface_xyz_ = this->declare_parameter<std::vector<double>>("support_surface_xyz", std::vector<double>{0.55, 0.0, 0.52});
+        support_surface_xyz_ = this->declare_parameter<std::vector<double>>("support_surface_xyz", std::vector<double>{0.55, 0.0, 0.49});
         support_surface_size_xyz_ =
-            this->declare_parameter<std::vector<double>>("support_surface_size_xyz", std::vector<double>{0.8, 0.8, 0.04});
+            this->declare_parameter<std::vector<double>>("support_surface_size_xyz", std::vector<double>{0.8, 0.8, 0.10});
 
         goal_joint_tolerance_ = this->declare_parameter<double>("goal_joint_tolerance", 1e-5);
-
-        const double pick_x = this->declare_parameter<double>("pick_x", pick_xyz_[0]);
-        const double pick_y = this->declare_parameter<double>("pick_y", pick_xyz_[1]);
-        const double pick_z = this->declare_parameter<double>("pick_z", pick_xyz_[2]);
-        pick_xyz_ = {pick_x, pick_y, pick_z};
-
-        const double place_x = this->declare_parameter<double>("place_x", place_xyz_[0]);
-        const double place_y = this->declare_parameter<double>("place_y", place_xyz_[1]);
-        const double place_z = this->declare_parameter<double>("place_z", place_xyz_[2]);
-        place_xyz_ = {place_x, place_y, place_z};
 
         pick_pose_topic_ = this->declare_parameter<std::string>("pick_pose_topic", "");
         place_pose_topic_ = this->declare_parameter<std::string>("place_pose_topic", "");
         use_external_pick_pose_ = this->declare_parameter<bool>("use_external_pick_pose", true);
         use_external_place_pose_ = this->declare_parameter<bool>("use_external_place_pose", true);
-
-        const double object_size_x = this->declare_parameter<double>("object_size_x", object_size_xyz_[0]);
-        const double object_size_y = this->declare_parameter<double>("object_size_y", object_size_xyz_[1]);
-        const double object_size_z = this->declare_parameter<double>("object_size_z", object_size_xyz_[2]);
-        object_size_xyz_ = {object_size_x, object_size_y, object_size_z};
-
-        const double support_surface_x = this->declare_parameter<double>("support_surface_x", support_surface_xyz_[0]);
-        const double support_surface_y = this->declare_parameter<double>("support_surface_y", support_surface_xyz_[1]);
-        const double support_surface_z = this->declare_parameter<double>("support_surface_z", support_surface_xyz_[2]);
-        support_surface_xyz_ = {support_surface_x, support_surface_y, support_surface_z};
-
-        const double support_surface_size_x = this->declare_parameter<double>("support_surface_size_x", support_surface_size_xyz_[0]);
-        const double support_surface_size_y = this->declare_parameter<double>("support_surface_size_y", support_surface_size_xyz_[1]);
-        const double support_surface_size_z = this->declare_parameter<double>("support_surface_size_z", support_surface_size_xyz_[2]);
-        support_surface_size_xyz_ = {support_surface_size_x, support_surface_size_y, support_surface_size_z};
 
         approach_distance_ = this->declare_parameter<double>("approach_distance", 0.10);
         approach_min_distance_ = this->declare_parameter<double>("approach_min_distance", 0.02);
@@ -163,20 +149,6 @@ public:
         additional_allowed_collision_links_ = this->declare_parameter<std::vector<std::string>>(
             "additional_allowed_collision_links", std::vector<std::string>{"panda_panda_link7"});
         grasp_rpy_ = this->declare_parameter<std::vector<double>>("grasp_rpy", std::vector<double>{1.571, 0.785, 1.571});
-
-        joint_state_topic_ = this->declare_parameter<std::string>("joint_state_topic", "/joint_states");
-        joint_state_wait_timeout_sec_ = this->declare_parameter<double>("joint_state_wait_timeout_sec", 10.0);
-
-        joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-            joint_state_topic_,
-            rclcpp::SystemDefaultsQoS(),
-            [this](const sensor_msgs::msg::JointState::SharedPtr msg)
-            {
-                if (!msg->name.empty())
-                {
-                    joint_state_received_ = true;
-                }
-            });
 
         if (!pick_pose_topic_.empty())
         {
@@ -288,21 +260,11 @@ public:
             }
         } guard{this};
 
-        if (!waitForJointState())
-        {
-            RCLCPP_ERROR(this->get_logger(),
-                         "No joint state received on '%s' within %.2f seconds. Abort MTC run.",
-                         joint_state_topic_.c_str(),
-                         joint_state_wait_timeout_sec_);
-            return false;
-        }
-
         if (refreshPickPlaceTargets())
         {
             resetCachedTaskState();
-            task_pipeline_initialized_ = false;
-            task_.reset();
-            RCLCPP_INFO(this->get_logger(), "Pick/place target updated, reset cached task and rebuild pipeline");
+            applyDynamicTaskProperties();
+            RCLCPP_INFO(this->get_logger(), "Pick/place target updated, cleared cached solution and kept pipeline");
         }
 
         if (!addCollisionObject())
@@ -321,6 +283,8 @@ public:
         {
             RCLCPP_INFO(this->get_logger(), "Reusing existing MTC task pipeline (cached task object)");
         }
+
+        applyDynamicTaskProperties();
 
         mtc::Task &task = *task_;
 
@@ -375,6 +339,7 @@ private:
         mtc::Task &task = *task_;
         task.stages()->setName("pick_place_task");
         task.loadRobotModel(shared_from_this());
+        task.setProperty("place_pose", makePoseStampedFromXYZ(world_frame_, place_xyz_));
 
         auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(shared_from_this());
         sampling_planner->setProperty("goal_joint_tolerance", goal_joint_tolerance_);
@@ -587,14 +552,9 @@ private:
                 stage->properties().set("marker_ns", "place_pose");
                 stage->setObject(object_name_);
 
-                geometry_msgs::msg::PoseStamped pose;
-                pose.header.frame_id = world_frame_;
-                pose.pose.orientation.w = 1.0;
-                pose.pose.position.x = place_xyz_[0];
-                pose.pose.position.y = place_xyz_[1];
-                pose.pose.position.z = place_xyz_[2];
-                stage->setPose(pose);
+                stage->setPose(makePoseStampedFromXYZ(world_frame_, place_xyz_));
                 stage->setMonitoredStage(pick_stage_ptr);
+                place_pose_stage_ = stage.get();
 
                 auto wrapper = std::make_unique<mtc::stages::ComputeIK>("place pose IK", std::move(stage));
                 wrapper->setMaxIKSolutions(place_max_ik_solutions_);
@@ -624,17 +584,17 @@ private:
             }
 
             {
+                auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (hand,object)");
+                stage->allowCollisions(object_name_, *task.getRobotModel()->getJointModelGroup(hand_group_), false);
+                place->insert(std::move(stage));
+            }
+
+            {
                 auto stage = std::make_unique<mtc::stages::MoveTo>("retreat after place", sampling_planner);
                 stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
                 stage->setGroup(arm_group_);
                 stage->setGoal("ready");
                 stage->setTrajectoryExecutionInfo(arm_exec_info);
-                place->insert(std::move(stage));
-            }
-
-            {
-                auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (hand,object)");
-                stage->allowCollisions(object_name_, *task.getRobotModel()->getJointModelGroup(hand_group_), false);
                 place->insert(std::move(stage));
             }
 
@@ -672,6 +632,21 @@ private:
         if (task_)
         {
             task_->reset();
+        }
+    }
+
+    void applyDynamicTaskProperties()
+    {
+        if (!task_)
+        {
+            return;
+        }
+
+        const auto place_pose = makePoseStampedFromXYZ(world_frame_, place_xyz_);
+        task_->setProperty("place_pose", place_pose);
+        if (place_pose_stage_ != nullptr)
+        {
+            place_pose_stage_->setPose(place_pose);
         }
     }
 
@@ -734,30 +709,31 @@ private:
 
     bool refreshPickPlaceTargets()
     {
-        std::vector<double> configured_pick = pick_xyz_;
-        std::vector<double> configured_place = place_xyz_;
-        this->get_parameter("pick_pose_xyz", configured_pick);
-        this->get_parameter("place_pose_xyz", configured_place);
-
-        if (configured_pick.size() != 3 || configured_place.size() != 3)
-        {
-            RCLCPP_WARN(this->get_logger(), "pick_pose_xyz/place_pose_xyz size invalid, keep last valid targets");
-            configured_pick = pick_xyz_;
-            configured_place = place_xyz_;
-        }
-
-        std::vector<double> next_pick = configured_pick;
-        std::vector<double> next_place = configured_place;
+        std::vector<double> next_pick = pick_xyz_;
+        std::vector<double> next_place = place_xyz_;
+        bool consumed_pick_update = false;
+        bool consumed_place_update = false;
 
         {
             std::lock_guard<std::mutex> lk(pose_override_mutex_);
             if (use_external_pick_pose_ && latest_pick_pose_received_ && latest_pick_pose_xyz_.size() == 3)
             {
                 next_pick = latest_pick_pose_xyz_;
+                consumed_pick_update = true;
             }
             if (use_external_place_pose_ && latest_place_pose_received_ && latest_place_pose_xyz_.size() == 3)
             {
                 next_place = latest_place_pose_xyz_;
+                consumed_place_update = true;
+            }
+
+            if (consumed_pick_update)
+            {
+                latest_pick_pose_received_ = false;
+            }
+            if (consumed_place_update)
+            {
+                latest_place_pose_received_ = false;
             }
         }
 
@@ -772,33 +748,6 @@ private:
                         place_xyz_[0], place_xyz_[1], place_xyz_[2]);
         }
         return changed;
-    }
-
-    bool waitForJointState()
-    {
-        if (joint_state_received_)
-        {
-            return true;
-        }
-
-        const auto start = std::chrono::steady_clock::now();
-        rclcpp::WallRate rate(50.0);
-        while (rclcpp::ok())
-        {
-            if (joint_state_received_)
-            {
-                RCLCPP_INFO(this->get_logger(), "Received joint state from topic '%s'", joint_state_topic_.c_str());
-                return true;
-            }
-
-            const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            if (elapsed >= joint_state_wait_timeout_sec_)
-            {
-                return false;
-            }
-            rate.sleep();
-        }
-        return false;
     }
 
     bool addCollisionObject()
@@ -940,10 +889,6 @@ private:
     std::vector<std::string> additional_allowed_collision_links_;
     std::vector<double> grasp_rpy_;
 
-    std::string joint_state_topic_;
-    double joint_state_wait_timeout_sec_{};
-    bool joint_state_received_{false};
-    rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
     std::string pick_pose_topic_;
     std::string place_pose_topic_;
     bool use_external_pick_pose_{};
@@ -965,6 +910,7 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_task_state_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_task_state_srv_private_;
     std::unique_ptr<mtc::Task> task_;
+    mtc::stages::GeneratePlacePose *place_pose_stage_{nullptr};
     mtc::SolutionBaseConstPtr solution_;
 };
 

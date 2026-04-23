@@ -72,11 +72,3 @@
   - 兼容性（旧命令/别名是否保留）
 - 同时更新 `docs/TASK_RECORD.md`（根因-修复-验证命令-结果）。
 
-## 9. 当前高优先级事实
-
-- `/clock` 需要发布真实 sim time；wall-anchored 会导致 `use_sim_time` 失真。
-- MoveIt/MTC/TF/控制链默认应统一启用 `use_sim_time=true`。
-- 抓取失败排查优先级：
-  1. 时钟链路
-  2. 控制器激活
-  3. demo cube 物理属性（刚体、摩擦、CCD、阻尼、接触偏置、求解迭代）

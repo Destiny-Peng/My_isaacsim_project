@@ -12,12 +12,12 @@ mtc_pick_place_demo:
     task_timeout_sec: 180.0
     execute: true
 
-    pick_pose_xyz: [0.55, 0.0, 0.60]
-    place_pose_xyz: [0.55, 0.0, 0.60]
+    pick_pose_xyz: [0.387, -0.233, 0.70]
+    place_pose_xyz: [0.55, 0.2, 0.70]
 
-    object_size_xyz: [0.04, 0.04, 0.12]
-    support_surface_xyz: [0.55, 0.0, 0.49]
-    support_surface_size_xyz: [0.8, 0.8, 0.10]
+    object_size_xyz: [0.02, 0.02, 0.12]
+    support_surface_xyz: [0.55, 0.0, 0.61]
+    support_surface_size_xyz: [0.8, 0.8, 0.05]
     grasp_x_offset: -0.1
     grasp_y_offset: 0.0
     grasp_z_offset: 0.0
@@ -30,17 +30,16 @@ mtc_pick_place_demo:
     place_pose_topic: /mtc_pick_place_demo/place_pose
     use_external_pick_pose: true
     use_external_place_pose: true
-    #---上面的参数不要改动，下面的参数可以根据需要调整---
     goal_joint_tolerance: 0.00001
-    approach_min_distance: 0.0
-    approach_distance: 0.10
+    approach_min_distance: 0.1
+    approach_distance: 0.15
     lift_min_distance: 0.005
     lift_distance: 0.12
     place_lower_min_distance: 0.0
     place_lower_distance: 0.13
     move_to_pick_timeout_sec: 15.0
-    move_to_place_timeout_sec: 5.0
-    plan_velocity_scaling: 0.06
-    plan_acceleration_scaling: 0.03
-    cartesian_step_size: 0.003
+    move_to_place_timeout_sec: 15.0
+    plan_velocity_scaling: 1.0
+    plan_acceleration_scaling: 1.0
+    cartesian_step_size: 0.5
     place_max_ik_solutions: 4

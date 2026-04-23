@@ -53,6 +53,7 @@ ros2 service call /mtc_pick_place_demo/reset_and_run std_srvs/srv/Trigger '{}'
 
 - 首次初始化 pipeline：`MTC task pipeline initialized once and will be reused across service reruns`
 - 服务重跑复用：`Reusing existing MTC task pipeline (cached task object)`
+- RViz 配置只保留一个 `Motion Planning Tasks` 实例，避免同名面板/显示项重复呈现为两个 task。
 
 稳定性修复（2026-04-22）：
 
@@ -61,6 +62,7 @@ ros2 service call /mtc_pick_place_demo/reset_and_run std_srvs/srv/Trigger '{}'
 - 当前行为改为仅等待订阅回调更新 joint state，不再对本节点重复 spin。
 - 移除了历史兜底参数 `keep_alive_after_execute_failure`（不再需要）。
 - 移除了执行前 `waitForExecutionActionServers` 阶段，执行链路改为直接 `task.execute()`；若 action server 不可用会直接在 execute 阶段报错，便于定位真实故障环节。
+- 清理了当前不再使用的辅助代码路径，保留实际消费的 reset / sync / bridge 逻辑。
 
 动态起终点扩展（2026-04-22）：
 
@@ -71,20 +73,38 @@ ros2 service call /mtc_pick_place_demo/reset_and_run std_srvs/srv/Trigger '{}'
   - `use_external_pick_pose`
   - `use_external_place_pose`
 - 行为说明：
-  - 每次 run 前读取最新 pick/place 目标；如目标变化会自动清空 cached solution 并重建 pipeline，再进行规划执行。
+  - 每次 run 前读取最新 pick/place 目标；如目标变化会清空 cached solution 并重新 plan，但不重建 pipeline。
   - 若外部 topic 未发布，则回退到 YAML 中的 `pick_pose_xyz` / `place_pose_xyz`。
   - topic 的 `frame_id` 需为空或等于 `world_frame`，否则该条消息会被忽略。
+  - 新消息是一次性消费语义：消费后会清空 pending 标记，不会因旧消息重复触发重规划。
+
+放置阶段碰撞时机修复（2026-04-22）：
+
+- `forbid collision (hand,object)` 调整到 `detach object` 之后、`retreat after place` 之前，避免放置后回撤路径仍允许手与 cube 相交。
+
+桌面与 Isaac Plane 对齐（2026-04-22）：
+
+- MTC 默认 `support_surface_xyz`/`support_surface_size_xyz` 对齐到 Isaac 侧常用值（`[0.55, 0.0, 0.49]` / `[0.8, 0.8, 0.10]`）。
+- 同时移除了旧的标量兼容参数入口（如 `support_surface_x`、`support_surface_size_x` 等），避免与向量参数双通道冲突。
 
 兼容端点：同一功能也可通过全局端点调用（`/run_task`、`/reset_task_state`、`/reset_and_run`）。
 
 ## 3. 参数说明
 
-分两类参数文件：
+参数文件职责已经拆分：
 
 - 启动参数：`config/mtc_launch_defaults.yaml`
-  - 控制 `mtc_start_delay`、`spawn_aux_controllers`、`launch_mtc_rviz`、`use_sim_time/use_sim_time_for_control`、pick/place 标量覆盖。
+  - 只负责 launch 级行为：`use_sim_time`、`use_sim_time_for_control`、`controller_spawn_delay`、`controller_manager_timeout`、`mtc_start_delay`、`spawn_aux_controllers`、`launch_mtc_rviz`
+  - 不再承载 pick/place/object_size/execute 等任务参数。
 - 任务参数：`config/pick_place_params.yaml`
-  - 控制对象尺寸、抓取偏置、路径采样与执行复用参数：
+  - 只负责 MTC 任务本身：对象/支撑面几何、抓取偏置、IK/路径参数、执行开关、外部位姿输入。
+  - 当前包含：
+    - `pick_pose_xyz`
+    - `place_pose_xyz`
+    - `pick_pose_topic`
+    - `place_pose_topic`
+    - `use_external_pick_pose`
+    - `use_external_place_pose`
     - `grasp_z_offset`
     - `grasp_rpy`
     - `grasp_angle_delta`
@@ -98,25 +118,12 @@ ros2 service call /mtc_pick_place_demo/reset_and_run std_srvs/srv/Trigger '{}'
     - `place_lower_min_distance`
     - `place_lower_distance`
     - `cartesian_step_size`
-    - `pick_pose_topic`
-    - `place_pose_topic`
-    - `use_external_pick_pose`
-    - `use_external_place_pose`
 
-  速度均匀化建议参数（当前默认）：
+外部位姿行为说明：
 
-  - `plan_velocity_scaling: 0.06`
-  - `plan_acceleration_scaling: 0.03`
-  - `approach_min_distance: 0.02`
-  - `lift_min_distance: 0.03`
-  - `place_lower_min_distance: 0.03`
-  - `cartesian_step_size: 0.003`
-
-  已清理无效参数：
-
-  - `keep_alive_after_execute_failure`
-  - `auto_run_on_start`
-  - `place_retreat_distance`
+- `pick_pose_topic` / `place_pose_topic` 收到新 `PoseStamped` 后，下一次 `run` 会消费该新值。
+- 消费后对应“待处理更新”标记会被清空，因此不会因为旧消息一直反复触发重新规划。
+- 若 topic 长时间不再发新消息，节点会继续保持当前已生效的 pick/place 目标，不会退回成默认值。
 
 建议：
 

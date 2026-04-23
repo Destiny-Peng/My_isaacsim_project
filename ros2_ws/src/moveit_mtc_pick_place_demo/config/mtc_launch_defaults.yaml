@@ -4,18 +4,5 @@ launch:
   controller_spawn_delay: 5.0
   controller_manager_timeout: 60.0
   mtc_start_delay: 8.0
-  execute: true
   spawn_aux_controllers: true
   launch_mtc_rviz: true
-
-pick_place:
-  pick_x: 0.55
-  pick_y: 0.0
-  pick_z: 0.65
-  place_x: 0.45
-  place_y: -0.25
-  place_z: 0.6
-  object_size_x: 0.04
-  object_size_y: 0.04
-  object_size_z: 0.12
-  goal_joint_tolerance: 0.00001

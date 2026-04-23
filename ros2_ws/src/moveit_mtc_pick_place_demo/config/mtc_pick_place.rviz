@@ -1,20 +1,3 @@
-Panels:
-  - Class: rviz_common/Displays
-    Name: Displays
-    Property Tree Widget:
-      Expanded:
-        - /MotionPlanning1
-        - /Motion Planning Tasks1
-  - Class: rviz_common/Help
-    Name: Help
-  - Class: rviz_common/Views
-    Name: Views
-  - Class: moveit_task_constructor/Motion Planning Tasks
-    Name: Motion Planning Tasks
-    Global Settings:
-      Task View Settings:
-        Show Computation Times: true
-        Task Expansion: All Expanded
 Visualization Manager:
   Displays:
     - Class: rviz_default_plugins/Grid

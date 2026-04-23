@@ -13,7 +13,6 @@ import os
 import urllib.parse
 import sys
 import time
-import copy
 from typing import Callable
 from pathlib import Path
 
@@ -651,19 +650,6 @@ def _infer_sim_dt_from_stage(stage) -> float:
         print(f"[WARN] Failed to infer sim dt from stage physics scene: {exc}")
 
     return 1.0 / 60.0
-
-
-def _get_prim_world_translation(stage, prim_path: str) -> np.ndarray | None:
-    from pxr import UsdGeom
-
-    prim = stage.GetPrimAtPath(prim_path)
-    if not prim or not prim.IsValid():
-        return None
-
-    xform = UsdGeom.Xformable(prim)
-    world = xform.ComputeLocalToWorldTransform(0.0)
-    t = world.ExtractTranslation()
-    return np.array([float(t[0]), float(t[1]), float(t[2])], dtype=np.float64)
 
 
 def _set_prim_world_translation(stage, prim_path: str, xyz: np.ndarray) -> bool:
