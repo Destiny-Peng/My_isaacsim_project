@@ -78,3 +78,4 @@ tests/
 # TacSL sensor
 **/tactile_record/*
 **/gelsight_r15_data/*
+sim/force_control/reference/*

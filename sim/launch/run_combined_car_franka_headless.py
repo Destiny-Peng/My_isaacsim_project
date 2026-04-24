@@ -941,13 +941,6 @@ def main() -> int:
         help="Inspect stage graph-like/ROS-like prims after stage load",
     )
     parser.add_argument(
-        "--launcher-backend",
-        type=str,
-        default="auto",
-        choices=["auto", "isaaclab", "isaacsim"],
-        help="Launcher backend: auto(gui->isaacsim, headless->isaaclab)",
-    )
-    parser.add_argument(
         "--sync-mtc-demo-object",
         action="store_true",
         help="Update existing demo object prim position only (no creation)",
@@ -1091,18 +1084,9 @@ def main() -> int:
 
     print(f"[INFO] Launch mode: {'headless' if args.headless else 'gui'}")
 
-    backend = args.launcher_backend
-    if backend == "auto":
-        backend = "isaaclab" if args.headless else "isaacsim"
-    print(f"[INFO] Launcher backend: {backend}")
+    from isaacsim import SimulationApp
 
-    if backend == "isaacsim":
-        from isaacsim import SimulationApp
-
-        simulation_app = SimulationApp({"headless": bool(args.headless)})
-    else:
-        launcher = AppLauncher(headless=args.headless)
-        simulation_app = launcher.app
+    simulation_app = SimulationApp({"headless": bool(args.headless)})
 
     import omni.kit.app
     import omni.timeline

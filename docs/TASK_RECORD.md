@@ -16,6 +16,7 @@
 - RViz 配置已缩减为单个 `Motion Planning Tasks` 实例，避免同名面板/显示项让人误以为创建了两个 task。
 - 新增 `sim/launch/grasp_metric_evaluator.py`：使用 Replicator annotator 记录对象/夹爪时序数据，并计算 success、stability、slippage 指标。
 - `run_combined_car_franka_headless.py` 已集成 grasp evaluator：可在同一仿真试验中自动录制并输出 CSV/JSON 指标结果。
+- 新增 `sim/force_control/franka_force_control_standalone.py`：基于 `isaacsim.*` 命名空间的 Franka 7-DoF 纯力矩控制模板，提供状态读取与力矩下发接口，可直接插入自定义控制律。
 
 ## 3. 近期验证结果
 
