@@ -17,12 +17,14 @@
 - 新增 `sim/launch/grasp_metric_evaluator.py`：使用 Replicator annotator 记录对象/夹爪时序数据，并计算 success、stability、slippage 指标。
 - `run_combined_car_franka_headless.py` 已集成 grasp evaluator：可在同一仿真试验中自动录制并输出 CSV/JSON 指标结果。
 - 新增 `sim/force_control/franka_force_control_standalone.py`：基于 `isaacsim.*` 命名空间的 Franka 7-DoF 纯力矩控制模板，提供状态读取与力矩下发接口，可直接插入自定义控制律。
+- `sim/force_control/franka_force_control_standalone.py` 已升级为关节空间阻抗控制示例（`tau = Kp(q_ref-q) + Kd(0-dq)`），支持 `--kp`、`--damping-ratio`、`--torque-limit`、`--q-target` 参数化调试。
 
 ## 3. 近期验证结果
 
 - `colcon build --packages-select moveit_mtc_pick_place_demo` 成功。
 - `python3 ros2_ws/scripts/run_mtc_demo.py --param-file ros2_ws/src/moveit_mtc_pick_place_demo/config/mtc_launch_defaults.yaml --dry-run` 只展开 launch 参数，没有无效 `pick_place:=None`。
 - 实际联调日志中可见：`MTC task pipeline initialized once and will be reused across service reruns` 与 `MTC pick and place execution completed successfully`。
+- `python3 sim/force_control/franka_force_control_standalone.py --headless --max-steps 300` 验证通过，日志包含 `Reached --max-steps=300, exiting.`，无 traceback。
 
 ## 4. 当前状态
 

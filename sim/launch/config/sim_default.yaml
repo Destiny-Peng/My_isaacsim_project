@@ -1,5 +1,7 @@
 simulation:
   headless: false
+  extensions:
+    - omni.physx.ui
   setup_ros2_python_bridge: true
   sync_mtc_demo_object: true
   sync_demo_support_surface: true
@@ -32,7 +34,7 @@ runtime:
   initial_joint_positions_yaml: ros2_ws/src/moveit_robot_config/config/initial_positions.yaml
 
 grasp_eval:
-  enable_grasp_metric_eval: true
+  enable_grasp_metric_eval: false
   grasp_eval_object_prim: /Cube
   grasp_eval_gripper_prim: /mobile_base_with_franka/panda_panda_hand
   grasp_eval_table_prim: /Plane
@@ -41,3 +43,14 @@ grasp_eval:
   grasp_eval_gripper_close_threshold: 0.015
   grasp_eval_slip_threshold: -0.02
   grasp_eval_output_prefix: sim/outputs/grasp_eval
+
+force_control:
+  # Joint-space impedance controller defaults for franka_force_control_standalone.py
+  kp: [120.0, 120.0, 110.0, 100.0, 80.0, 60.0, 40.0]
+  damping_ratio: 1.0
+  torque_limit: [80.0, 80.0, 80.0, 60.0, 40.0, 30.0, 20.0]
+  q_target: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+  physics_dt: 0.01
+  max_steps: 0
+  headless: false
+  auto_fix_physics: false

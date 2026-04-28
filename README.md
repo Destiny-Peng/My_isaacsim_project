@@ -55,3 +55,39 @@ python3 ros2_ws/scripts/run_mtc_demo.py \
 - `ros2_ws/src/moveit_mtc_pick_place_demo/README.md`
 - `docs/ARCHITECTURE.md`
 - `docs/TASK_RECORD.md`
+
+## 4. Franka 阻抗控制示例（Standalone）
+
+新增脚本：`sim/force_control/franka_force_control_standalone.py`
+
+用途：
+
+- 在 Isaac Sim 5.1.0 中直接对 Franka 前 7 个关节执行关节空间阻抗控制。
+- 控制律：`tau = Kp * (q_ref - q) + Kd * (0 - dq)`，并对力矩做限幅。
+- 启动后默认将当前姿态作为阻抗平衡点（也可通过参数给定目标位姿）。
+
+关键参数：
+
+- `--headless`：无界面运行（默认 GUI）。
+- `--max-steps`：最大控制步数；`0` 表示一直运行到窗口关闭或 Ctrl+C。
+- `--kp`：7 维关节刚度。
+- `--damping-ratio`：阻尼比，按 `kd = 2*zeta*sqrt(kp)` 自动计算。
+- `--torque-limit`：7 维关节力矩限幅。
+- `--q-target`：7 维关节目标位置（单位 rad）。
+
+示例命令：
+
+```bash
+cd /home/jacy/project/isaac_test/isaac_sim_fullstack
+python3 sim/force_control/franka_force_control_standalone.py \
+  --headless \
+  --max-steps 300 \
+  --kp 120,120,110,100,80,60,40 \
+  --damping-ratio 1.0 \
+  --torque-limit 80,80,80,60,40,30,20 \
+  --q-target 0.0,-0.785,0.0,-2.356,0.0,1.571,0.785
+```
+
+兼容性说明：
+
+- 继续保留原脚本路径 `sim/force_control/franka_force_control_standalone.py`，无需修改已有调用入口。
