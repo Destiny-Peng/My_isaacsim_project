@@ -46,6 +46,8 @@ python3 sim/launch/run_combined_car_franka_headless.py \
 - `demo_object.demo_object_prim`（默认 `/Cube`）
 - `demo_object.support_surface_prim`（默认 `/Plane`）
 - `demo_object.support_surface_center`（建议与 MTC 的 `support_surface_xyz` 保持一致）
+- `simulation.extensions`：仿真启动时自动启用的扩展列表（当前包含 `omni.physx.ui` 以支持运行时交互施力）。
+- `force_control`：Franka 力控相关参数（详见 `README.md` 第 4 节），包括 Pinocchio URDF 路径、KP/KD/力矩限幅、物理求解器迭代数等。
 
 说明：
 

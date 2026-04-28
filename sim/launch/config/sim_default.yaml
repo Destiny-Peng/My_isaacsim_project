@@ -45,12 +45,19 @@ grasp_eval:
   grasp_eval_output_prefix: sim/outputs/grasp_eval
 
 force_control:
+  # URDF path for Pinocchio dynamics model (relative to project root)
+  urdf_path: ros2_ws/src/robot_description/urdf/arm_only_franka.urdf
   # Joint-space impedance controller defaults for franka_force_control_standalone.py
   kp: [120.0, 120.0, 110.0, 100.0, 80.0, 60.0, 40.0]
   damping_ratio: 1.0
   torque_limit: [80.0, 80.0, 80.0, 60.0, 40.0, 30.0, 20.0]
   q_target: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-  physics_dt: 0.01
+  physics_dt: 0.005
   max_steps: 0
   headless: false
   auto_fix_physics: false
+  # Physics solver iterations for stable force control (higher = more stable)
+  solver_position_iterations: 32
+  solver_velocity_iterations: 2
+  # CSV recording output prefix
+  recording_output_prefix: sim/outputs/force_control
