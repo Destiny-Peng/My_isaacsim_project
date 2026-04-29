@@ -292,11 +292,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--param-file", type=str, default="", help="YAML param file to load defaults (only --param-file needed)")
     parser.add_argument("--physics-dt", type=float, default=DEFAULT_PHYSICS_DT, help="Physics step size in seconds")
-    parser.add_argument(
-        "--auto-fix-physics",
-        action="store_true",
-        help="[Deprecated] Best-effort: attempt to reduce physics_dt at runtime when jitter is suspected",
-    )
     parser.add_argument("--max-steps", type=int, default=0, help="Stop after N control steps (0 means run until closed)")
     parser.add_argument(
         "--urdf-path",
@@ -364,7 +359,6 @@ def _apply_yaml_defaults(parser: argparse.ArgumentParser, param_cfg: dict) -> No
         "headless": "headless",
         "render_rate_hz": "render_rate_hz",
         "physics_dt": "physics_dt",
-        "auto_fix_physics": "auto_fix_physics",
         "max_steps": "max_steps",
         "urdf_path": "urdf_path",
         "solver_position_iterations": "solver_position_iterations",
@@ -465,29 +459,7 @@ if args.solver_position_iterations > 0 or args.solver_velocity_iterations > 0:
     except Exception as exc:
         print(f"[WARN] Failed to configure physics solver iterations: {exc}")
 
-# Optional best-effort runtime physics dt adjustment (deprecated).
-if args.auto_fix_physics:
-    try:
-        new_dt = float(PHYSICS_DT) / 2.0 if float(PHYSICS_DT) > 0.0 else float(PHYSICS_DT)
-        updated = False
-        if hasattr(my_world, "set_physics_dt"):
-            try:
-                my_world.set_physics_dt(new_dt)
-                updated = True
-            except Exception:
-                updated = False
-        else:
-            try:
-                setattr(my_world, "physics_dt", float(new_dt))
-                updated = True
-            except Exception:
-                updated = False
-        if updated:
-            print(f"[INFO] AUTO_FIX: adjusted runtime physics_dt -> {new_dt}")
-        else:
-            print("[WARN] AUTO_FIX: no runtime API available to change physics_dt")
-    except Exception as exc:
-        print(f"[WARN] AUTO_FIX: failed to adjust physics dt: {exc}")
+
 
 articulation_controller = my_franka.get_articulation_controller()
 
@@ -662,10 +634,10 @@ while simulation_app.is_running() and not stop_requested:
                 tau_referenceInput=tau_referenceInput,
                 tau_applied=robot_state["tau"],
             )
-        current_time = time.time()
-        actual_dt = current_time - prev_time # 实际运行的总耗时（物理+渲染）
-        prev_time = current_time
-        print("dt",actual_dt)
+        # current_time = time.time()
+        # actual_dt = current_time - prev_time # 实际运行的总耗时（物理+渲染）
+        # prev_time = current_time
+        # print("dt",actual_dt)
         step_count += 1
     # Match official stacking.py lifecycle: step inside running loop.
     should_render = not bool(args.headless)
@@ -676,7 +648,8 @@ while simulation_app.is_running() and not stop_requested:
             should_render = True
         else:
             should_render = False
-
+    # should_render = True
+    # print(my_world.current_time)
     my_world.step(render=should_render)
 
 # ---- Cleanup ---- #
