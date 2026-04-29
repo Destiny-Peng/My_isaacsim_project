@@ -266,8 +266,9 @@ class PinocchioImpedanceController:
 
         #do a test
         # # tau = G(q)-J^T(Kp*x_error+Kd*dx_error)
-        Kp = np.diag([100, 100, 100, 10, 10, 10])
-        Kd = np.diag([100,100,100, 2, 2, 2])
+        Kp = np.diag([80, 80, 80, 10, 10, 10])
+        # Kd = np.diag([50,50,50, 2, 2, 2])
+        Kd = 2*np.sqrt(Kp)
         
         F_cart = -Kp @ x_error - Kd @ dx_error
         
