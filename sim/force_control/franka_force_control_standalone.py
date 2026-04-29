@@ -149,10 +149,10 @@ class PinocchioImpedanceController:
                 f"Model has {self._model.njoints - 1} active joints."
             )
         # Desired inertial
-        # self.M_d = np.eye(6)*1.0 
-        self.M_d = np.diag([10,10,10,0.5,0.5,0.5]) 
+        self.M_d = np.eye(6)*1.0 
+        # self.M_d = np.diag([10,10,10,0.5,0.5,0.5]) 
         # Desired stiffness
-        self.K_d = np.diag([2000,2000,2000,80,80,80]) 
+        self.K_d = np.diag([500,500,500,80,80,80]) 
         # Desired damping (critical damping Cd = 2*sqrt(Md*Kd))
         self.yita = 2.0
         self.C_d = 2*self.yita*np.sqrt(self.M_d * self.K_d)
@@ -236,15 +236,15 @@ class PinocchioImpedanceController:
 
         # 2. 雅可比 J (6x7)
         # LOCAL_WORLD_ALIGNED 表示线速度和角速度都在世界坐标系下表达
-        J_pin = pin.computeFrameJacobian(self._model, self._data, q_full, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
+        J = pin.computeFrameJacobian(self._model, self._data, q_full, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
         # 交换行以匹配 [linear; angular]
-        J = np.vstack([J_pin[3:, :], J_pin[:3, :]])
+        # J = np.vstack([J_pin[3:, :], J_pin[:3, :]])
         dx = J@dq_full
         dx_error = dx - self._dx_desiredTrajectory
         
-        # 3. 雅可比导数 dJ (6x7)
-        # dJ_pin = pin.getFrameJacobianTimeVariation(self._model, self._data, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
-        # dJ = np.vstack([dJ_pin[3:, :], dJ_pin[:3, :]])
+        # # 3. 雅可比导数 dJ (6x7)
+        # dJ = pin.getFrameJacobianTimeVariation(self._model, self._data, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
+        # # dJ = np.vstack([dJ_pin[3:, :], dJ_pin[:3, :]])
 
         # # 4. 动力学项
         # M = pin.crba(self._model, self._data, q_full) # 惯性矩阵
@@ -267,7 +267,7 @@ class PinocchioImpedanceController:
         #do a test
         # # tau = G(q)-J^T(Kp*x_error+Kd*dx_error)
         Kp = np.diag([100, 100, 100, 10, 10, 10])
-        Kd = np.diag([100, 100, 100,  5,  5,  5])
+        Kd = np.diag([100,100,100, 2, 2, 2])
         
         F_cart = -Kp @ x_error - Kd @ dx_error
         
