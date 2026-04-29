@@ -46,7 +46,8 @@ grasp_eval:
 
 force_control:
   # URDF path for Pinocchio dynamics model (relative to project root)
-  urdf_path: ros2_ws/src/robot_description/urdf/arm_only_franka.urdf
+  urdf_path: sim/force_control/reference/urdf/panda.urdf
+  # urdf_path: ros2_ws/src/robot_description/urdf/arm_only_franka.urdf
   # Joint-space impedance controller defaults for franka_force_control_standalone.py
   kp: [120.0, 120.0, 110.0, 100.0, 80.0, 60.0, 40.0]
   damping_ratio: 1.0
@@ -58,6 +59,7 @@ force_control:
   auto_fix_physics: false
   # Physics solver iterations for stable force control (higher = more stable)
   solver_position_iterations: 32
-  solver_velocity_iterations: 2
+  solver_velocity_iterations: 4
   # CSV recording output prefix
+  record: false
   recording_output_prefix: sim/outputs/force_control

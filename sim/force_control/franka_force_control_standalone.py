@@ -20,7 +20,7 @@ DEFAULT_STAGE_UNITS_IN_METERS = 1.0
 DEFAULT_KP = np.array([120.0, 120.0, 110.0, 100.0, 80.0, 60.0, 40.0], dtype=np.float64)
 DEFAULT_DAMPING_RATIO = 1.0
 DEFAULT_TORQUE_LIMIT = np.array([80.0, 80.0, 80.0, 60.0, 40.0, 30.0, 20.0], dtype=np.float64)
-DEFAULT_Q_TARGET = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
+DEFAULT_Q_DESIRED_TRAJECTORY = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
 FRANKA_PRIM_PATH = "/World/Franka"
 FRANKA_NAME = "franka"
 ARM_JOINT_INDICES = np.arange(ARM_DOF, dtype=np.int64)
@@ -35,7 +35,7 @@ _FORCE_CONTROL_FIELD_NAMES = [
     "wall_time_s",
     "q1", "q2", "q3", "q4", "q5", "q6", "q7",
     "dq1", "dq2", "dq3", "dq4", "dq5", "dq6", "dq7",
-    "tau_cmd_1", "tau_cmd_2", "tau_cmd_3", "tau_cmd_4", "tau_cmd_5", "tau_cmd_6", "tau_cmd_7",
+    "tau_referenceInput_1", "tau_referenceInput_2", "tau_referenceInput_3", "tau_referenceInput_4", "tau_referenceInput_5", "tau_referenceInput_6", "tau_referenceInput_7",
     "tau_applied_1", "tau_applied_2", "tau_applied_3", "tau_applied_4", "tau_applied_5", "tau_applied_6", "tau_applied_7",
 ]
 
@@ -60,14 +60,14 @@ class JointDataRecorder:
         sim_time_s: float,
         q: np.ndarray,
         dq: np.ndarray,
-        tau_cmd: np.ndarray,
+        tau_referenceInput: np.ndarray,
         tau_applied: np.ndarray,
     ) -> None:
         row: dict[str, Any] = {"step": step, "sim_time_s": sim_time_s, "wall_time_s": time.time()}
         for i in range(ARM_DOF):
             row[f"q{i+1}"] = float(q[i])
             row[f"dq{i+1}"] = float(dq[i])
-            row[f"tau_cmd_{i+1}"] = float(tau_cmd[i])
+            row[f"tau_referenceInput_{i+1}"] = float(tau_referenceInput[i])
             row[f"tau_applied_{i+1}"] = float(tau_applied[i])
         self._rows.append(row)
 
@@ -108,9 +108,19 @@ class JointDataRecorder:
 class PinocchioImpedanceController:
     """Model-based joint-space impedance controller using Pinocchio dynamics.
 
-    Control law (computed-torque style):
-        tau = M(q) * (Kp * (q_des - q) + Kd * (dq_des - dq))
-              + C(q, dq) * dq + g(q)
+    Variable naming conventions used in this controller (matching pseudocode):
+        - no subscript: actual state (e.g. q, dq)
+        - subscript `desiredTrajectory`: desired/reference trajectory (e.g. q_desiredTrajectory)
+        - subscript `trackingError`: tracking error (e.g. q_trackingError)
+        - subscript `desiredDynamics`: desired response (accelerations) (e.g. ddq_desiredDynamics)
+        - subscript `referenceInput`: reference/control input (e.g. tau_referenceInput)
+    Derivatives use `d` / `dd` prefixes: dq, ddq, dq_desiredTrajectory, etc.
+
+    Control law (joint-space computed-torque style):
+        tau_referenceInput = M(q) * ddq_desiredDynamics + C(q, dq) * dq + G(q)
+    Control law (formal style):
+        tau = M(q) * J^-1 * [ddx_des + M(q)^-1 * (F_ext - C(q, dq) * dx_error - Kd * x_error) - dJ * dq]
+              + C(q, dq) * dq + G(q)
 
     This compensates for Coriolis/centrifugal and gravity terms so the
     closed-loop behaves as a decoupled mass-spring-damper system.
@@ -119,16 +129,13 @@ class PinocchioImpedanceController:
     def __init__(
         self,
         urdf_path: str,
-        kp: np.ndarray,
-        kd: np.ndarray,
-        torque_limit: np.ndarray,
     ) -> None:
         urdf_file = Path(urdf_path).expanduser().resolve()
         if not urdf_file.exists():
             raise FileNotFoundError(f"URDF not found: {urdf_file}")
         self._model = pin.buildModelFromUrdf(str(urdf_file))
         self._data = self._model.createData()
-
+        self._end_effector_id = self._model.getFrameId("panda_hand")
         # First 7 active joints are the arm (panda_joint1..panda_joint7).
         # Finger joints 8,9 are excluded from the arm control.
         arm_model_idx = list(range(1, ARM_DOF + 1))  # skip universe joint (idx 0)
@@ -146,60 +153,133 @@ class PinocchioImpedanceController:
                 f"Pinocchio: expected {ARM_DOF} arm joints, got {len(self._arm_q_idx)}. "
                 f"Model has {self._model.njoints - 1} active joints."
             )
+        # Desired inertial
+        # self.M_d = np.eye(6)*1.0 
+        self.M_d = np.diag([5,5,5,0.5,0.5,0.5]) 
+        # Desired stiffness
+        self.K_d = np.diag([500,500,500,20,20,20]) 
+        # Desired damping (critical damping Cd = 2*sqrt(Md*Kd))
+        self.yita = 1.5
+        self.C_d = 2*self.yita*np.sqrt(self.M_d * self.K_d)
 
-        self._kp = np.asarray(kp, dtype=np.float64).ravel()
-        self._kd = np.asarray(kd, dtype=np.float64).ravel()
-        self._torque_limit = np.asarray(torque_limit, dtype=np.float64).ravel()
+        # 期望轨迹初始化 (这里简单设为固定位置)
+        self._translation_desiredTrajectory = np.array([0.38936162, 0.004671326, 0.45737252])
+        #四元数转换到旋转矩阵
+        from scipy.spatial.transform import Rotation as R
+        quaternion = [0.92171,0.02599,0.38696,0.00627]
+        r = R.from_quat(quaternion)
+        self._rotation_desiredTrajectory = r.as_matrix()
+        self._dx_desiredTrajectory = np.zeros(6)
+        self._ddx_desiredTrajectory = np.zeros(6)
+        self.dq_filtered = np.zeros(9)
+
 
         print(
             f"[INFO] PinocchioImpedanceController: model={urdf_file.name}, "
             f"arm_joints={ARM_DOF}, nq={self._model.nq}, nv={self._model.nv}"
         )
 
-    def compute(self, q: np.ndarray, dq: np.ndarray, q_des: np.ndarray) -> np.ndarray:
+    def _compute_kinematics(self, q, dq):
+        """
+        占位符：留待后续手搓
+        返回: x (6), J (6x7), dJ (6x7)
+        """
+        # 这里仅为示例结构，实际需填充真实计算逻辑
+        x = np.zeros(6)
+        J = np.zeros((6, 7))
+        dJ = np.zeros((6, 7))
+        return x, J, dJ
+
+    def _compute_dynamics(self, q, dq):
+        """
+        占位符：留待后续手搓
+        返回 M (7x7), C_vec (7), G_vec (7)
+        """
+        M = np.eye(7)
+        C_vec = np.zeros(7)
+        G_vec = np.zeros(7)
+        return M, C_vec, G_vec
+
+    def compute(self, q: np.ndarray, dq: np.ndarray,  F_ext: np.ndarray) -> np.ndarray:
         """Compute model-based impedance torques for the 7 arm joints.
 
         Parameters
         ----------
         q : ndarray shape (7,)
-            Current joint positions (rad).
+            Current joint positions (rad) (actual state).
         dq : ndarray shape (7,)
-            Current joint velocities (rad/s).
-        q_des : ndarray shape (7,)
-            Desired joint positions (rad).
+            Current joint velocities (rad/s) (actual state).
+        F_ext : ndarray shape (6,)
+            External wrench at the end-effector (force in Newtons, torque in Nm) (actual state).
 
         Returns
         -------
-        tau : ndarray shape (7,), float32
-            Torque commands for the arm joints.
+        tau_referenceInput : ndarray shape (7,), float32
+            Reference torque commands for the arm joints (referenceInput).
         """
+
         q_full = np.zeros(self._model.nq, dtype=np.float64)
         dq_full = np.zeros(self._model.nv, dtype=np.float64)
         q_full[self._arm_q_idx] = q
         dq_full[self._arm_v_idx] = dq
+        alpha = 0.15 # 滤波系数，越小越平滑但延迟越大
+        self.dq_filtered = alpha * dq_full + (1 - alpha) * self.dq_filtered
+        dq_full = self.dq_filtered
+        # print("qfull",q_full)
+        # print("dqfull",dq_full)
 
-        pin.crba(self._model, self._data, q_full)  # M(q) stored in data.M
-        g_vec = pin.computeGeneralizedGravity(self._model, self._data, q_full)
-        C_mat = pin.computeCoriolisMatrix(self._model, self._data, q_full, dq_full)
-        C_times_dq = C_mat @ dq_full
+        # 1. 正向运动学
+        pin.forwardKinematics(self._model, self._data, q_full, dq_full)
+        pin.updateFramePlacements(self._model, self._data)
+        oMf_current = self._data.oMf[self._end_effector_id]
+        pos_error = oMf_current.translation - self._translation_desiredTrajectory
+        R_error = self._rotation_desiredTrajectory @ oMf_current.rotation.T
+        orient_error = pin.log3(R_error)
+        x_error = np.concatenate([pos_error,orient_error])
 
-        M_full = self._data.M  # (nv x nv)
-        # Extract arm-only sub-components (first 7 DOFs)
-        arm_idx = np.arange(ARM_DOF)
-        M_arm = M_full[np.ix_(arm_idx, arm_idx)]
-        C_arm = C_times_dq[arm_idx]
-        g_arm = g_vec[arm_idx]
+        # 2. 雅可比 J (6x7)
+        # LOCAL_WORLD_ALIGNED 表示线速度和角速度都在世界坐标系下表达
+        J_pin = pin.computeFrameJacobian(self._model, self._data, q_full, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
+        # 交换行以匹配 [linear; angular]
+        J = np.vstack([J_pin[3:, :], J_pin[:3, :]])
+        dx = J@dq_full
+        dx_error = dx - self._dx_desiredTrajectory
+        
+        # 3. 雅可比导数 dJ (6x7)
+        dJ_pin = pin.getFrameJacobianTimeVariation(self._model, self._data, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
+        dJ = np.vstack([dJ_pin[3:, :], dJ_pin[:3, :]])
 
-        # Desired acceleration: spring-damper (dq_des = 0)
-        pos_err = np.asarray(q_des, dtype=np.float64).ravel() - q
-        a_des = self._kp * pos_err - self._kd * dq
+        # 4. 动力学项
+        M = pin.crba(self._model, self._data, q_full) # 惯性矩阵
+        G = pin.computeGeneralizedGravity(self._model, self._data, q_full) # 重力
+        C_vec = pin.computeCoriolisMatrix(self._model, self._data, q_full, dq_full) @ dq_full # 科氏力向量
 
-        # Computed-torque impedance: tau = M * a_des + C + g
-        # tau = M_arm @ a_des + C_arm + g_arm
+        # 注意：Pinocchio 的 J 通常是 [angular; linear]，如果需要 [linear; angular] 需交换
+        # tau = M(q) * J^-1 * [ddx_des + M(q)^-1 * (F_ext - C(q, dq) * dx_error - Kd * x_error) - dJ * dq]
+        #      + C(q, dq) * dq + G(q)
+        M_d_inv = np.linalg.inv(self.M_d)
+        ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (F_ext - self.C_d @ dx_error - self.K_d @ x_error)
+        J_pinv=np.linalg.pinv(J)
+        ddq_desiredDynamics = J_pinv @ (ddx_desiredDynamics - dJ@dq_full)
+        # ddq_desiredDynamics = J_pinv @ ddx_desiredDynamics 
+        # tau = G
+        tau = M @ ddq_desiredDynamics+C_vec+G
 
-        # do a test, if we remove the C_arm and g_arm compensation, how does it perform?
-        tau = M_arm @ a_des
-        tau = np.clip(tau, -self._torque_limit, self._torque_limit)
+
+        #do a test
+        pos_error = oMf_current.translation - self._translation_desiredTrajectory
+        # 暂时忽略姿态，只控制位置
+        x_error_pos = pos_error 
+        dx_error_pos = dx[:3] - self._dx_desiredTrajectory[:3]
+        # 2. 极保守的 PD 增益
+        Kp = 10.0
+        Kd = 10.0
+
+        # 3. 计算笛卡尔力 (3维)
+        F_cart = -Kp * x_error_pos - Kd * dx_error_pos
+        J_linear = J[:3, :] # 取线速度对应的列
+
+        # tau = J_linear.T @ F_cart + G # 加上重力补偿
 
         return tau.astype(np.float32, copy=False)
 
@@ -272,7 +352,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--q-target",
         type=str,
-        default=",".join(str(v) for v in DEFAULT_Q_TARGET.tolist()),
+        default=",".join(str(v) for v in DEFAULT_Q_DESIRED_TRAJECTORY.tolist()),
         help="7 joint target positions (rad), comma-separated",
     )
     return parser
@@ -339,8 +419,6 @@ def _yaml_or_cli(key: str, cli_val):
 
 KP = _resolve_vector7(_yaml_or_cli("kp", args.kp), "kp")
 KD = 2.0 * float(_yaml_or_cli("damping_ratio", args.damping_ratio)) * np.sqrt(KP)
-TORQUE_LIMIT = _resolve_vector7(_yaml_or_cli("torque_limit", args.torque_limit), "torque-limit")
-Q_TARGET = _resolve_vector7(_yaml_or_cli("q_target", args.q_target), "q-target")
 
 # Helper: apply YAML only when CLI matches parser default.
 def _apply_param(cli_val, parser_default, yaml_key: str):
@@ -525,26 +603,30 @@ def get_robot_state() -> dict[str, np.ndarray]:
     """Read first 7 arm-joint state from articulation native API."""
     q_all = np.asarray(my_franka.get_joint_positions(), dtype=np.float64)
     dq_all = np.asarray(my_franka.get_joint_velocities(), dtype=np.float64)
+    metadata = my_franka._articulation_view._metadata
+    joint_indices = 1 + np.array([metadata.joint_indices["panda_hand_joint"] ])
+    f_all = np.asarray(my_franka.get_measured_joint_forces(joint_indices), dtype=np.float64)
     tau_all = np.asarray(my_franka.get_applied_joint_efforts(), dtype=np.float64)
 
     q = q_all[ARM_JOINT_INDICES].copy()
     dq = dq_all[ARM_JOINT_INDICES].copy()
+    f = f_all
     tau = tau_all[ARM_JOINT_INDICES].copy()
 
-    if q.shape[0] != ARM_DOF or dq.shape[0] != ARM_DOF or tau.shape[0] != ARM_DOF:
+    if q.shape[0] != ARM_DOF or dq.shape[0] != ARM_DOF :
         raise ValueError(
-            "State dimension mismatch: expected length 7 for q/dq/tau, got "
-            f"q={q.shape[0]}, dq={dq.shape[0]}, tau={tau.shape[0]}"
+            "State dimension mismatch: expected length 7 for q/dq/f, got "
+            f"q={q.shape[0]}, dq={dq.shape[0]}, f={f.shape[0]}"
         )
-    return {"q": q, "dq": dq, "tau": tau}
+    return {"q": q, "dq": dq, "f_ext": f,"tau": tau}
 
 
 def set_robot_torques(torques: np.ndarray) -> None:
     """Apply first 7 joint torques via ArticulationAction."""
-    tau = np.asarray(torques, dtype=np.float32).reshape(-1)
-    if tau.shape[0] != ARM_DOF:
-        raise ValueError(f"Torque dimension mismatch: expected length 7, got {tau.shape[0]}")
-    action = ArticulationAction(joint_efforts=tau, joint_indices=ARM_JOINT_INDICES)
+    f = np.asarray(torques, dtype=np.float32).reshape(-1)
+    if f.shape[0] != ARM_DOF:
+        raise ValueError(f"Torque dimension mismatch: expected length 7, got {f.shape[0]}")
+    action = ArticulationAction(joint_efforts=f, joint_indices=ARM_JOINT_INDICES)
     articulation_controller.apply_action(action)
 
 
@@ -575,16 +657,20 @@ else:
 print(f"[INFO] Using URDF: {URDF_PATH}")
 _impedance_ctrl = PinocchioImpedanceController(
     urdf_path=URDF_PATH,
-    kp=KP,
-    kd=KD,
-    torque_limit=TORQUE_LIMIT,
 )
 
 
 def compute_control_torques(state: dict[str, np.ndarray]) -> np.ndarray:
     """Model-based joint-space impedance control via Pinocchio.
 
-    tau = M(q) * (Kp * (q_des - q) + Kd * (0 - dq)) + C(q,dq)*dq + g(q)
+    Uses the notation:
+        - q: actual joint positions
+        - q_desiredTrajectory: desired joint positions
+        - q_trackingError: q_desiredTrajectory - q
+        - ddq_desiredDynamics: desired accelerations (spring-damper)
+        - tau_referenceInput: reference torque command (computed-torque)
+    Formula:
+        tau_referenceInput = M(q) * ddq_desiredDynamics + C(q,dq) * dq + G(q)
     """
     required_keys = ("q", "dq")
     for key in required_keys:
@@ -595,8 +681,11 @@ def compute_control_torques(state: dict[str, np.ndarray]) -> np.ndarray:
 
     q = np.asarray(state["q"], dtype=np.float64)
     dq = np.asarray(state["dq"], dtype=np.float64)
-    tau = _impedance_ctrl.compute(q, dq, Q_TARGET)
-    return tau
+    f = np.asarray(state.get("f_ext", np.zeros(6)), dtype=np.float64).ravel()  # external wrench (force/torque)
+    tau_referenceInput = _impedance_ctrl.compute(q, dq, f)
+    # clip the tau from 9 dof to arm dof
+    tau_referenceInput = tau_referenceInput[:ARM_DOF]
+    return tau_referenceInput
 
 
 # ---- Recording setup ---- #
@@ -629,8 +718,8 @@ while simulation_app.is_running() and not stop_requested:
             reset_needed = False
 
         robot_state = get_robot_state()
-        tau_cmd = compute_control_torques(robot_state)
-        set_robot_torques(tau_cmd)
+        tau_referenceInput = compute_control_torques(robot_state)
+        set_robot_torques(tau_referenceInput)
 
         if _recorder is not None:
             _recorder.record(
@@ -638,7 +727,7 @@ while simulation_app.is_running() and not stop_requested:
                 sim_time_s=step_count * PHYSICS_DT,
                 q=robot_state["q"],
                 dq=robot_state["dq"],
-                tau_cmd=tau_cmd,
+                tau_referenceInput=tau_referenceInput,
                 tau_applied=robot_state["tau"],
             )
 
