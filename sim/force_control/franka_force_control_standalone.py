@@ -17,14 +17,9 @@ from isaacsim import SimulationApp
 ARM_DOF = 7
 DEFAULT_PHYSICS_DT = 0.01
 DEFAULT_STAGE_UNITS_IN_METERS = 1.0
-DEFAULT_KP = np.array([120.0, 120.0, 110.0, 100.0, 80.0, 60.0, 40.0], dtype=np.float64)
-DEFAULT_DAMPING_RATIO = 1.0
-DEFAULT_TORQUE_LIMIT = np.array([80.0, 80.0, 80.0, 60.0, 40.0, 30.0, 20.0], dtype=np.float64)
-DEFAULT_Q_DESIRED_TRAJECTORY = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
 FRANKA_PRIM_PATH = "/World/Franka"
 FRANKA_NAME = "franka"
 ARM_JOINT_INDICES = np.arange(ARM_DOF, dtype=np.int64)
-ARM_JOINT_NAMES = [f"panda_joint{i+1}" for i in range(ARM_DOF)]
 
 
 # ---- Data Recorder (incremental CSV flush, same pattern as grasp_eval) ---- #
@@ -155,11 +150,11 @@ class PinocchioImpedanceController:
             )
         # Desired inertial
         # self.M_d = np.eye(6)*1.0 
-        self.M_d = np.diag([5,5,5,0.5,0.5,0.5]) 
+        self.M_d = np.diag([10,10,10,0.5,0.5,0.5]) 
         # Desired stiffness
-        self.K_d = np.diag([500,500,500,20,20,20]) 
+        self.K_d = np.diag([2000,2000,2000,80,80,80]) 
         # Desired damping (critical damping Cd = 2*sqrt(Md*Kd))
-        self.yita = 1.5
+        self.yita = 2.0
         self.C_d = 2*self.yita*np.sqrt(self.M_d * self.K_d)
 
         # 期望轨迹初始化 (这里简单设为固定位置)
@@ -172,12 +167,14 @@ class PinocchioImpedanceController:
         self._dx_desiredTrajectory = np.zeros(6)
         self._ddx_desiredTrajectory = np.zeros(6)
         self.dq_filtered = np.zeros(9)
+        self.tau_filterd = np.zeros(9)
 
 
         print(
             f"[INFO] PinocchioImpedanceController: model={urdf_file.name}, "
             f"arm_joints={ARM_DOF}, nq={self._model.nq}, nv={self._model.nv}"
         )
+
 
     def _compute_kinematics(self, q, dq):
         """
@@ -222,7 +219,7 @@ class PinocchioImpedanceController:
         dq_full = np.zeros(self._model.nv, dtype=np.float64)
         q_full[self._arm_q_idx] = q
         dq_full[self._arm_v_idx] = dq
-        alpha = 0.15 # 滤波系数，越小越平滑但延迟越大
+        alpha = 0.2 # 滤波系数，越小越平滑但延迟越大
         self.dq_filtered = alpha * dq_full + (1 - alpha) * self.dq_filtered
         dq_full = self.dq_filtered
         # print("qfull",q_full)
@@ -246,54 +243,53 @@ class PinocchioImpedanceController:
         dx_error = dx - self._dx_desiredTrajectory
         
         # 3. 雅可比导数 dJ (6x7)
-        dJ_pin = pin.getFrameJacobianTimeVariation(self._model, self._data, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
-        dJ = np.vstack([dJ_pin[3:, :], dJ_pin[:3, :]])
+        # dJ_pin = pin.getFrameJacobianTimeVariation(self._model, self._data, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
+        # dJ = np.vstack([dJ_pin[3:, :], dJ_pin[:3, :]])
 
-        # 4. 动力学项
-        M = pin.crba(self._model, self._data, q_full) # 惯性矩阵
-        G = pin.computeGeneralizedGravity(self._model, self._data, q_full) # 重力
-        C_vec = pin.computeCoriolisMatrix(self._model, self._data, q_full, dq_full) @ dq_full # 科氏力向量
+        # # 4. 动力学项
+        # M = pin.crba(self._model, self._data, q_full) # 惯性矩阵
+        # G = pin.computeGeneralizedGravity(self._model, self._data, q_full) # 重力
+        # C_vec = pin.computeCoriolisMatrix(self._model, self._data, q_full, dq_full) @ dq_full # 科氏力向量
 
-        # 注意：Pinocchio 的 J 通常是 [angular; linear]，如果需要 [linear; angular] 需交换
-        # tau = M(q) * J^-1 * [ddx_des + M(q)^-1 * (F_ext - C(q, dq) * dx_error - Kd * x_error) - dJ * dq]
-        #      + C(q, dq) * dq + G(q)
-        M_d_inv = np.linalg.inv(self.M_d)
-        ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (F_ext - self.C_d @ dx_error - self.K_d @ x_error)
-        J_pinv=np.linalg.pinv(J)
-        ddq_desiredDynamics = J_pinv @ (ddx_desiredDynamics - dJ@dq_full)
-        # ddq_desiredDynamics = J_pinv @ ddx_desiredDynamics 
-        # tau = G
-        tau = M @ ddq_desiredDynamics+C_vec+G
+        # # 注意：Pinocchio 的 J 通常是 [angular; linear]，如果需要 [linear; angular] 需交换
+        # # tau = M(q) * J^-1 * [ddx_des + M(q)^-1 * (F_ext - C(q, dq) * dx_error - Kd * x_error) - dJ * dq]
+        # #      + C(q, dq) * dq + G(q)
+        # M_d_inv = np.linalg.inv(self.M_d)
+        # ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (F_ext - self.C_d @ dx_error - self.K_d @ x_error)
+        # # ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (- self.C_d @ dx_error - self.K_d @ x_error)
+        # J_pinv=np.linalg.pinv(J)
+        # ddq_desiredDynamics = J_pinv @ (ddx_desiredDynamics - dJ@dq_full)
+        # # ddq_desiredDynamics = J_pinv @ ddx_desiredDynamics 
+        # # tau = 1.0001*G
+        # tau = M @ ddq_desiredDynamics+C_vec+G
 
 
         #do a test
-        pos_error = oMf_current.translation - self._translation_desiredTrajectory
-        # 暂时忽略姿态，只控制位置
-        x_error_pos = pos_error 
-        dx_error_pos = dx[:3] - self._dx_desiredTrajectory[:3]
-        # 2. 极保守的 PD 增益
-        Kp = 10.0
-        Kd = 10.0
+        # # tau = G(q)-J^T(Kp*x_error+Kd*dx_error)
+        Kp = np.diag([100, 100, 100, 10, 10, 10])
+        Kd = np.diag([100, 100, 100,  5,  5,  5])
+        
+        F_cart = -Kp @ x_error - Kd @ dx_error
+        
+        # 映射回关节力矩: tau = J.T @ F_cart + G
+        tau_arm = J.T @ F_cart
+        G = pin.computeGeneralizedGravity(self._model, self._data, q_full) # 重力
+        tau = tau_arm + G # 只控制arm joints，finger joints保持不动
 
-        # 3. 计算笛卡尔力 (3维)
-        F_cart = -Kp * x_error_pos - Kd * dx_error_pos
-        J_linear = J[:3, :] # 取线速度对应的列
-
-        # tau = J_linear.T @ F_cart + G # 加上重力补偿
-
-        return tau.astype(np.float32, copy=False)
-
-
-def _parse_vector7(text: str, name: str) -> np.ndarray:
-    parts = [p.strip() for p in text.split(",") if p.strip()]
-    if len(parts) != ARM_DOF:
-        raise ValueError(f"{name} expects {ARM_DOF} comma-separated values, got: {text}")
-    return np.array([float(v) for v in parts], dtype=np.float64)
+        tau = np.clip(tau, -87, 87) # Franka torque limits (Nm)
+        # self.tau_filterd = alpha * tau + (1 - alpha) * self.tau_filterd
+        return tau.astype(np.float32)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Franka 7-DoF joint impedance control example (Isaac Sim 5.1.0)")
     parser.add_argument("--headless", action="store_true", help="Run Isaac Sim without GUI window")
+    parser.add_argument(
+        "--render-rate-hz",
+        type=float,
+        default=30.0,
+        help="Viewport render rate in Hz (<=0 renders every step)",
+    )
     parser.add_argument("--param-file", type=str, default="", help="YAML param file to load defaults (only --param-file needed)")
     parser.add_argument("--physics-dt", type=float, default=DEFAULT_PHYSICS_DT, help="Physics step size in seconds")
     parser.add_argument(
@@ -328,32 +324,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recording-prefix",
         type=str,
-        default="",
+        default="sim/outputs/force_control",
         help="Output prefix for CSV recording (overrides param-file)",
-    )
-    parser.add_argument(
-        "--kp",
-        type=str,
-        default=",".join(str(v) for v in DEFAULT_KP.tolist()),
-        help="7 joint stiffness values, comma-separated",
-    )
-    parser.add_argument(
-        "--damping-ratio",
-        type=float,
-        default=DEFAULT_DAMPING_RATIO,
-        help="Critical damping ratio for kd = 2*zeta*sqrt(kp)",
-    )
-    parser.add_argument(
-        "--torque-limit",
-        type=str,
-        default=",".join(str(v) for v in DEFAULT_TORQUE_LIMIT.tolist()),
-        help="7 absolute torque limits, comma-separated",
-    )
-    parser.add_argument(
-        "--q-target",
-        type=str,
-        default=",".join(str(v) for v in DEFAULT_Q_DESIRED_TRAJECTORY.tolist()),
-        help="7 joint target positions (rad), comma-separated",
     )
     return parser
 
@@ -382,98 +354,40 @@ def _load_param_file(param_file: str) -> dict:
     return {}
 
 
-args = _build_arg_parser().parse_args()
-
-# Load param-file overrides if provided. CLI args take precedence over YAML.
-_param_cfg = _load_param_file(args.param_file) if getattr(args, "param_file", "") else {}
-
-
-def _merge_param(cli_value, yaml_key: str) -> Any:
-    """Return YAML value only when the CLI value matches its argparse default;
-    otherwise the explicitly provided CLI value wins."""
-    if yaml_key in _param_cfg:
-        return _param_cfg[yaml_key]
-    return cli_value
+_parser = _build_arg_parser()
+_pre_args, _ = _parser.parse_known_args()
+_param_cfg = _load_param_file(_pre_args.param_file) if getattr(_pre_args, "param_file", "") else {}
 
 
-# Resolve final scalar/list parameters (accept list or comma-separated string)
-def _resolve_vector7(value, name: str) -> np.ndarray:
-    if isinstance(value, (list, tuple, np.ndarray)):
-        arr = np.array(value, dtype=np.float64)
-        if arr.size != ARM_DOF:
-            raise ValueError(f"{name} expects length {ARM_DOF}, got {arr}")
-        return arr
-    if isinstance(value, str):
-        return _parse_vector7(value, name)
-    # fallback to parser-provided CLI string
-    return _parse_vector7(getattr(args, name.replace("-", "_")), name)
+def _apply_yaml_defaults(parser: argparse.ArgumentParser, param_cfg: dict) -> None:
+    yaml_to_dest = {
+        "headless": "headless",
+        "render_rate_hz": "render_rate_hz",
+        "physics_dt": "physics_dt",
+        "auto_fix_physics": "auto_fix_physics",
+        "max_steps": "max_steps",
+        "urdf_path": "urdf_path",
+        "solver_position_iterations": "solver_position_iterations",
+        "solver_velocity_iterations": "solver_velocity_iterations",
+        "record": "record",
+        "recording_output_prefix": "recording_prefix",
+        "recording_prefix": "recording_prefix",
+    }
+    defaults = {}
+    for yaml_key, dest in yaml_to_dest.items():
+        if yaml_key in param_cfg:
+            defaults[dest] = param_cfg[yaml_key]
+    if defaults:
+        parser.set_defaults(**defaults)
 
 
-# Final run-time parameter values (CLI args take precedence over YAML)
-def _yaml_or_cli(key: str, cli_val):
-    """Use YAML value when present; otherwise fall back to CLI value."""
-    if key in _param_cfg:
-        return _param_cfg[key]
-    return cli_val
+_apply_yaml_defaults(_parser, _param_cfg)
+args = _parser.parse_args()
 
-
-KP = _resolve_vector7(_yaml_or_cli("kp", args.kp), "kp")
-KD = 2.0 * float(_yaml_or_cli("damping_ratio", args.damping_ratio)) * np.sqrt(KP)
-
-# Helper: apply YAML only when CLI matches parser default.
-def _apply_param(cli_val, parser_default, yaml_key: str):
-    """If CLI value differs from parser default, use CLI (user intended it).
-    Otherwise fall back to YAML value if present, else parser default."""
-    if cli_val != parser_default:
-        return cli_val
-    if yaml_key in _param_cfg:
-        return _param_cfg[yaml_key]
-    return cli_val
-
-
-# Store parser defaults for CLI-vs-default detection.
-PARSER_DEFAULTS = _build_arg_parser().parse_args([])
-
-FINAL_HEADLESS = bool(_apply_param(args.headless, PARSER_DEFAULTS.headless, "headless"))
-FINAL_PHYSICS_DT = float(_apply_param(args.physics_dt, PARSER_DEFAULTS.physics_dt, "physics_dt"))
-FINAL_MAX_STEPS = int(_apply_param(args.max_steps, PARSER_DEFAULTS.max_steps, "max_steps"))
-AUTO_FIX_PHYSICS = bool(_apply_param(
-    getattr(args, "auto_fix_physics", False),
-    getattr(PARSER_DEFAULTS, "auto_fix_physics", False),
-    "auto_fix_physics",
-))
-
-# Pinocchio URDF path (YAML or CLI)
-URDF_PATH = str(_apply_param(
-    getattr(args, "urdf_path", ""),
-    getattr(PARSER_DEFAULTS, "urdf_path", ""),
-    "urdf_path",
-))
-# Solver iterations (0 = engine default)
-SOLVER_POS_ITERS = int(_apply_param(
-    getattr(args, "solver_position_iterations", 0),
-    getattr(PARSER_DEFAULTS, "solver_position_iterations", 0),
-    "solver_position_iterations",
-))
-SOLVER_VEL_ITERS = int(_apply_param(
-    getattr(args, "solver_velocity_iterations", 0),
-    getattr(PARSER_DEFAULTS, "solver_velocity_iterations", 0),
-    "solver_velocity_iterations",
-))
-# Recording
-ENABLE_RECORDING = bool(_apply_param(
-    getattr(args, "record", False),
-    getattr(PARSER_DEFAULTS, "record", False),
-    "record",
-))
-RECORDING_PREFIX = str(_apply_param(
-    getattr(args, "recording_prefix", "sim/outputs/force_control"),
-    getattr(PARSER_DEFAULTS, "recording_prefix", "sim/outputs/force_control"),
-    "recording_output_prefix",
-))
+URDF_PATH = str(args.urdf_path)
 
 # Isaac Sim 5.1.0 standalone app entry. Create app after resolving headless.
-simulation_app = SimulationApp({"headless": bool(FINAL_HEADLESS)})
+simulation_app = SimulationApp({"headless": bool(args.headless)})
 
 # Try to enable interactive PhysX UI extension so user can apply forces via UI.
 try:
@@ -506,7 +420,7 @@ except (ImportError, AttributeError):
     from isaacsim.core.utils.types import ArticulationAction
 
 
-PHYSICS_DT = float(FINAL_PHYSICS_DT)
+PHYSICS_DT = float(args.physics_dt)
 STAGE_UNITS_IN_METERS = DEFAULT_STAGE_UNITS_IN_METERS
 
 
@@ -528,23 +442,31 @@ my_world = World(stage_units_in_meters=STAGE_UNITS_IN_METERS, physics_dt=float(P
 my_franka = my_world.scene.add(Franka(prim_path=FRANKA_PRIM_PATH, name=FRANKA_NAME))
 my_world.reset()
 
+# Default camera light (USD DistantLight).
+import omni.usd
+from pxr import UsdLux
+
+stage = omni.usd.get_context().get_stage()
+light = UsdLux.DistantLight.Define(stage, "/Environment/defaultLight")
+light.CreateIntensityAttr().Set(1000.0)
+
 # ---- Configure physics solver iterations for stable force control ---- #
-if SOLVER_POS_ITERS > 0 or SOLVER_VEL_ITERS > 0:
+if args.solver_position_iterations > 0 or args.solver_velocity_iterations > 0:
     try:
         import carb
 
         physx_iface = carb.settings.get_settings()
-        if SOLVER_POS_ITERS > 0:
-            physx_iface.set_int("/physics/solverPositionIterationCount", int(SOLVER_POS_ITERS))
-            print(f"[INFO] Physics solver position iterations: {SOLVER_POS_ITERS}")
-        if SOLVER_VEL_ITERS > 0:
-            physx_iface.set_int("/physics/solverVelocityIterationCount", int(SOLVER_VEL_ITERS))
-            print(f"[INFO] Physics solver velocity iterations: {SOLVER_VEL_ITERS}")
+        if args.solver_position_iterations > 0:
+            physx_iface.set_int("/physics/solverPositionIterationCount", int(args.solver_position_iterations))
+            print(f"[INFO] Physics solver position iterations: {args.solver_position_iterations}")
+        if args.solver_velocity_iterations > 0:
+            physx_iface.set_int("/physics/solverVelocityIterationCount", int(args.solver_velocity_iterations))
+            print(f"[INFO] Physics solver velocity iterations: {args.solver_velocity_iterations}")
     except Exception as exc:
         print(f"[WARN] Failed to configure physics solver iterations: {exc}")
 
 # Optional best-effort runtime physics dt adjustment (deprecated).
-if AUTO_FIX_PHYSICS:
+if args.auto_fix_physics:
     try:
         new_dt = float(PHYSICS_DT) / 2.0 if float(PHYSICS_DT) > 0.0 else float(PHYSICS_DT)
         updated = False
@@ -690,23 +612,33 @@ def compute_control_torques(state: dict[str, np.ndarray]) -> np.ndarray:
 
 # ---- Recording setup ---- #
 _recorder: JointDataRecorder | None = None
-if ENABLE_RECORDING:
-    _recorder = JointDataRecorder(output_prefix=RECORDING_PREFIX)
-    print(f"[INFO] Force-control recording enabled: {RECORDING_PREFIX}")
+if args.record:
+    _recorder = JointDataRecorder(output_prefix=str(args.recording_prefix))
+    print(f"[INFO] Force-control recording enabled: {args.recording_prefix}")
 
 # Apply torque-mode setup right after reset, and again after any world reset.
 _configure_pure_torque_mode()
 
 
+render_interval_s = 0.0
+last_render_time_s = 0.0
+if not bool(args.headless) and float(args.render_rate_hz) > 0.0:
+    render_interval_s = 1.0 / float(args.render_rate_hz)
+
 reset_needed = False
 step_count = 0
+import time
+prev_time = time.time()
+# from omni.isaac.core.utils.physics import get_physics_interface
+# scene = my_world.get_physics_context()
+# scene.set_solver_type("TGS") # 建议用 TGS 稳定性更高
+# scene.set_time_steps_per_second(1.0 / PHYSICS_DT) # 例如 400
+
 while simulation_app.is_running() and not stop_requested:
-    if FINAL_MAX_STEPS > 0 and step_count >= int(FINAL_MAX_STEPS):
-        print(f"[INFO] Reached max-steps={FINAL_MAX_STEPS}, exiting.")
+    if args.max_steps > 0 and step_count >= int(args.max_steps):
+        print(f"[INFO] Reached max-steps={args.max_steps}, exiting.")
         break
 
-    # Match official stacking.py lifecycle: step inside running loop.
-    my_world.step(render=not bool(FINAL_HEADLESS))
 
     if my_world.is_stopped() and not reset_needed:
         reset_needed = True
@@ -730,8 +662,22 @@ while simulation_app.is_running() and not stop_requested:
                 tau_referenceInput=tau_referenceInput,
                 tau_applied=robot_state["tau"],
             )
-
+        current_time = time.time()
+        actual_dt = current_time - prev_time # 实际运行的总耗时（物理+渲染）
+        prev_time = current_time
+        print("dt",actual_dt)
         step_count += 1
+    # Match official stacking.py lifecycle: step inside running loop.
+    should_render = not bool(args.headless)
+    if should_render and render_interval_s > 0.0:
+        now_s = time.monotonic()
+        if last_render_time_s == 0.0 or (now_s - last_render_time_s) >= render_interval_s:
+            last_render_time_s = now_s
+            should_render = True
+        else:
+            should_render = False
+
+    my_world.step(render=should_render)
 
 # ---- Cleanup ---- #
 if _recorder is not None:
