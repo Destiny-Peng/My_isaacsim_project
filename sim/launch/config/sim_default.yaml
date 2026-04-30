@@ -50,7 +50,10 @@ force_control:
   # urdf_path: ros2_ws/src/robot_description/urdf/arm_only_franka.urdf
   # Joint-space impedance controller defaults for franka_force_control_standalone.py
   kp: [120.0, 120.0, 110.0, 100.0, 80.0, 60.0, 40.0]
-  damping_ratio: 1.0
+  # Cartesian stiffness/damping for Pinocchio impedance controller (6: [x,y,z,rx,ry,rz])
+  Kp: [80.0, 80.0, 80.0, 2.0, 2.0, 2.0]
+  Kd: [50.0, 50.0, 50.0, 0.7344, 0.7344, 0.7344]
+  damping_ratio: 50.0
   torque_limit: [80.0, 80.0, 80.0, 60.0, 40.0, 30.0, 20.0]
   q_target: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
   physics_dt: 0.005

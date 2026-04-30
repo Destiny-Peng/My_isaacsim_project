@@ -150,30 +150,41 @@ class PinocchioImpedanceController:
             )
         # Desired inertial
         self.M_d = np.eye(6)*1.0 
-        # self.M_d = np.diag([10,10,10,0.5,0.5,0.5]) 
+        # self.M_d = np.diag([0.5, 0.5, 0.5, 0.02, 0.02, 0.02]) 
         # Desired stiffness
-        self.K_d = np.diag([500,500,500,80,80,80]) 
+        self.K_d = np.diag([10.0, 10.0, 10.0, 0., 0., 0.]) 
         # Desired damping (critical damping Cd = 2*sqrt(Md*Kd))
-        self.yita = 2.0
+        self.yita = 1.0
         self.C_d = 2*self.yita*np.sqrt(self.M_d * self.K_d)
+        # self.C_d = np.diag([50.0, 50.0, 50.0, 0.7344, 0.7344, 0.7344])
+
+        # Initial Cartesian gains (6x6). These will be updated from YAML at runtime.
+        self._Kp = np.diag([80.0, 80.0, 80.0, 10.0, 10.0, 10.0])
+        self._Kd = np.diag([50.0, 50.0, 50.0, 2.0, 2.0, 2.0])
 
         # 期望轨迹初始化 (这里简单设为固定位置)
         self._translation_desiredTrajectory = np.array([0.38936162, 0.004671326, 0.45737252])
         #四元数转换到旋转矩阵
         from scipy.spatial.transform import Rotation as R
-        quaternion = [0.92171,0.02599,0.38696,0.00627]
+        quaternion = [0.0004, 0.73105, 0.0003, 0.68232]
         r = R.from_quat(quaternion)
         self._rotation_desiredTrajectory = r.as_matrix()
         self._dx_desiredTrajectory = np.zeros(6)
         self._ddx_desiredTrajectory = np.zeros(6)
         self.dq_filtered = np.zeros(9)
-        self.tau_filterd = np.zeros(9)
+        self.dx_error_filterd = np.zeros(6)
 
 
         print(
             f"[INFO] PinocchioImpedanceController: model={urdf_file.name}, "
             f"arm_joints={ARM_DOF}, nq={self._model.nq}, nv={self._model.nv}"
         )
+
+    def update_gains(self, kp=None, kd=None):
+        if kp is not None:
+            self._Kp = np.diag(np.asarray(kp, dtype=float))
+        if kd is not None:
+            self._Kd = np.diag(np.asarray(kd, dtype=float))
 
 
     def _compute_kinematics(self, q, dq):
@@ -231,7 +242,10 @@ class PinocchioImpedanceController:
         oMf_current = self._data.oMf[self._end_effector_id]
         pos_error = oMf_current.translation - self._translation_desiredTrajectory
         R_error = self._rotation_desiredTrajectory @ oMf_current.rotation.T
-        orient_error = pin.log3(R_error)
+        # orient_error = pin.log3(R_error)
+        u, s, vt = np.linalg.svd(R_error)
+        R_error_clean = u @ vt
+        orient_error = -pin.log3(R_error_clean)
         x_error = np.concatenate([pos_error,orient_error])
 
         # 2. 雅可比 J (6x7)
@@ -241,44 +255,41 @@ class PinocchioImpedanceController:
         # J = np.vstack([J_pin[3:, :], J_pin[:3, :]])
         dx = J@dq_full
         dx_error = dx - self._dx_desiredTrajectory
+        beta = 0.2 # 滤波系数，越小越平滑但延迟越大
+        self.dx_error_filterd = beta * dx_error + (1 - beta) * self.dx_error_filterd
+        dx_error = self.dx_error_filterd
         
-        # # 3. 雅可比导数 dJ (6x7)
-        # dJ = pin.getFrameJacobianTimeVariation(self._model, self._data, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
-        # # dJ = np.vstack([dJ_pin[3:, :], dJ_pin[:3, :]])
+        # 3. 雅可比导数 dJ (6x7)
+        dJ = pin.getFrameJacobianTimeVariation(self._model, self._data, self._end_effector_id, pin.LOCAL_WORLD_ALIGNED)
 
-        # # 4. 动力学项
-        # M = pin.crba(self._model, self._data, q_full) # 惯性矩阵
-        # G = pin.computeGeneralizedGravity(self._model, self._data, q_full) # 重力
-        # C_vec = pin.computeCoriolisMatrix(self._model, self._data, q_full, dq_full) @ dq_full # 科氏力向量
-
-        # # 注意：Pinocchio 的 J 通常是 [angular; linear]，如果需要 [linear; angular] 需交换
-        # # tau = M(q) * J^-1 * [ddx_des + M(q)^-1 * (F_ext - C(q, dq) * dx_error - Kd * x_error) - dJ * dq]
-        # #      + C(q, dq) * dq + G(q)
-        # M_d_inv = np.linalg.inv(self.M_d)
-        # ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (F_ext - self.C_d @ dx_error - self.K_d @ x_error)
-        # # ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (- self.C_d @ dx_error - self.K_d @ x_error)
-        # J_pinv=np.linalg.pinv(J)
-        # ddq_desiredDynamics = J_pinv @ (ddx_desiredDynamics - dJ@dq_full)
-        # # ddq_desiredDynamics = J_pinv @ ddx_desiredDynamics 
-        # # tau = 1.0001*G
-        # tau = M @ ddq_desiredDynamics+C_vec+G
-
-
-        #do a test
-        # # tau = G(q)-J^T(Kp*x_error+Kd*dx_error)
-        Kp = np.diag([80, 80, 80, 10, 10, 10])
-        # Kd = np.diag([50,50,50, 2, 2, 2])
-        Kd = 2*np.sqrt(Kp)
-        
-        F_cart = -Kp @ x_error - Kd @ dx_error
-        
-        # 映射回关节力矩: tau = J.T @ F_cart + G
-        tau_arm = J.T @ F_cart
+        # 4. 动力学项
+        M = pin.crba(self._model, self._data, q_full) # 惯性矩阵
         G = pin.computeGeneralizedGravity(self._model, self._data, q_full) # 重力
-        tau = tau_arm + G # 只控制arm joints，finger joints保持不动
+        C_vec = pin.computeCoriolisMatrix(self._model, self._data, q_full, dq_full) @ dq_full # 科氏力向量
 
-        tau = np.clip(tau, -87, 87) # Franka torque limits (Nm)
-        # self.tau_filterd = alpha * tau + (1 - alpha) * self.tau_filterd
+        # 注意：Pinocchio 的 J 通常是 [angular; linear]，如果需要 [linear; angular] 需交换
+        # tau = M(q) * J^-1 * [ddx_des + M(q)^-1 * (F_ext - C(q, dq) * dx_error - Kd * x_error) - dJ * dq]
+        #      + C(q, dq) * dq + G(q)
+        M_d_inv = np.linalg.inv(self.M_d)
+        ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (F_ext - self.C_d @ dx_error - self.K_d @ x_error)
+        # ddx_desiredDynamics= self._ddx_desiredTrajectory + M_d_inv @ (- self.C_d @ dx_error - self.K_d @ x_error)
+        J_pinv=np.linalg.pinv(J)
+        ddq_desiredDynamics = J_pinv @ (ddx_desiredDynamics - dJ@dq_full)
+        # ddq_desiredDynamics = J_pinv @ ddx_desiredDynamics 
+        # tau = 1.0001*G
+        tau = M @ ddq_desiredDynamics+C_vec+G
+
+
+        # # Use runtime-updatable Cartesian gains (6x6). Defaults kept if not set.
+        # Kp = getattr(self, "_Kp", np.diag([80.0, 80.0, 80.0, 10.0, 10.0, 10.0]))
+        # Kd = getattr(self, "_Kd", np.diag([50.0, 50.0, 50.0, 2.0, 2.0, 2.0]))
+        # F_cart = -Kp @ x_error - Kd @ dx_error
+        
+        # # 映射回关节力矩: tau = J.T @ F_cart + G
+        # tau_arm = J.T @ F_cart
+        # G = pin.computeGeneralizedGravity(self._model, self._data, q_full) # 重力
+        # tau = tau_arm + G # 只控制arm joints，finger joints保持不动
+
         return tau.astype(np.float32)
 
 
@@ -334,10 +345,7 @@ def _load_param_file(param_file: str) -> dict:
     if not file_path.exists():
         raise FileNotFoundError(f"Param file not found: {file_path}")
 
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError("PyYAML is required for --param-file support") from exc
+    import yaml
 
     with open(file_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
@@ -381,38 +389,26 @@ args = _parser.parse_args()
 
 URDF_PATH = str(args.urdf_path)
 
+# Track param-file path + mtime for render-step reloads of gains
+_param_file_path = getattr(args, "param_file", "") or ""
+
 # Isaac Sim 5.1.0 standalone app entry. Create app after resolving headless.
 simulation_app = SimulationApp({"headless": bool(args.headless)})
 
 # Try to enable interactive PhysX UI extension so user can apply forces via UI.
-try:
-    import omni.kit.app
+import omni.kit.app
 
-    try:
-        manager = omni.kit.app.get_app().get_extension_manager()
-        # Attempt enable immediately; ignore failures but log them.
-        try:
-            if not manager.get_enabled_extension_id("omni.physx.ui"):
-                manager.set_extension_enabled_immediate("omni.physx.ui", True)
-                print("[INFO] Enabled extension: omni.physx.ui")
-            else:
-                print("[INFO] omni.physx.ui already enabled")
-        except Exception as _:
-            print("[WARN] Could not toggle omni.physx.ui extension immediately")
-    except Exception:
-        print("[WARN] Extension manager unavailable; skipping extension enable attempt")
-except Exception:
-    print("[WARN] omni.kit.app not available; cannot enable UI extension")
+manager = omni.kit.app.get_app().get_extension_manager()
+if not manager.get_enabled_extension_id("omni.physx.ui"):
+    manager.set_extension_enabled_immediate("omni.physx.ui", True)
+    print("[INFO] Enabled extension: omni.physx.ui")
+else:
+    print("[INFO] omni.physx.ui already enabled")
 
 from isaacsim.core.api import World
 from isaacsim.robot.manipulators.examples.franka import Franka
 
-try:
-    # Preferred by task requirement; kept first for forward compatibility.
-    from isaacsim.core.prims import ArticulationAction  # type: ignore[attr-defined]
-except (ImportError, AttributeError):
-    # Isaac Sim 5.1.0 provides this class from core.utils.types.
-    from isaacsim.core.utils.types import ArticulationAction
+from omni.isaac.core.utils.types import ArticulationAction
 
 
 PHYSICS_DT = float(args.physics_dt)
@@ -447,18 +443,15 @@ light.CreateIntensityAttr().Set(1000.0)
 
 # ---- Configure physics solver iterations for stable force control ---- #
 if args.solver_position_iterations > 0 or args.solver_velocity_iterations > 0:
-    try:
-        import carb
+    import carb
 
-        physx_iface = carb.settings.get_settings()
-        if args.solver_position_iterations > 0:
-            physx_iface.set_int("/physics/solverPositionIterationCount", int(args.solver_position_iterations))
-            print(f"[INFO] Physics solver position iterations: {args.solver_position_iterations}")
-        if args.solver_velocity_iterations > 0:
-            physx_iface.set_int("/physics/solverVelocityIterationCount", int(args.solver_velocity_iterations))
-            print(f"[INFO] Physics solver velocity iterations: {args.solver_velocity_iterations}")
-    except Exception as exc:
-        print(f"[WARN] Failed to configure physics solver iterations: {exc}")
+    physx_iface = carb.settings.get_settings()
+    if args.solver_position_iterations > 0:
+        physx_iface.set_int("/physics/solverPositionIterationCount", int(args.solver_position_iterations))
+        print(f"[INFO] Physics solver position iterations: {args.solver_position_iterations}")
+    if args.solver_velocity_iterations > 0:
+        physx_iface.set_int("/physics/solverVelocityIterationCount", int(args.solver_velocity_iterations))
+        print(f"[INFO] Physics solver velocity iterations: {args.solver_velocity_iterations}")
 
 
 
@@ -527,27 +520,17 @@ def set_robot_torques(torques: np.ndarray) -> None:
 
 # ---- Initialize Pinocchio impedance controller ---- #
 if not URDF_PATH:
-    # Default: resolve relative to project root (2 levels up from this script).
+    raise FileNotFoundError("URDF path is required. Specify --urdf-path or add urdf_path to your YAML config.")
+
+# Resolve relative to project root if not absolute
+_urdf_candidate = Path(URDF_PATH)
+if not _urdf_candidate.is_absolute():
     _script_dir = Path(__file__).resolve().parent
-    _project_root = _script_dir.parent.parent  # isaac_sim_fullstack/
-    _default_urdf = (_project_root / "ros2_ws/src/robot_description/urdf/arm_only_franka.urdf").resolve()
-    if _default_urdf.exists():
-        URDF_PATH = str(_default_urdf)
-    else:
-        raise FileNotFoundError(
-            f"No URDF found at default path {_default_urdf}. "
-            "Specify --urdf-path or add urdf_path to your YAML config."
-        )
-else:
-    # Resolve relative to project root if not absolute
-    _urdf_candidate = Path(URDF_PATH)
-    if not _urdf_candidate.is_absolute():
-        _script_dir = Path(__file__).resolve().parent
-        _project_root = _script_dir.parent.parent
-        _urdf_candidate = (_project_root / URDF_PATH).resolve()
-    if not _urdf_candidate.exists():
-        raise FileNotFoundError(f"URDF not found: {_urdf_candidate}")
-    URDF_PATH = str(_urdf_candidate)
+    _project_root = _script_dir.parent.parent
+    _urdf_candidate = (_project_root / URDF_PATH).resolve()
+if not _urdf_candidate.exists():
+    raise FileNotFoundError(f"URDF not found: {_urdf_candidate}")
+URDF_PATH = str(_urdf_candidate)
 
 print(f"[INFO] Using URDF: {URDF_PATH}")
 _impedance_ctrl = PinocchioImpedanceController(
@@ -647,6 +630,10 @@ while simulation_app.is_running() and not stop_requested:
         if last_render_time_s == 0.0 or (now_s - last_render_time_s) >= render_interval_s:
             last_render_time_s = now_s
             should_render = True
+            # On actual render steps, reload YAML param-file and update Cartesian gains.
+            if _param_file_path:
+                new_cfg = _load_param_file(_param_file_path)
+                _impedance_ctrl.update_gains(kp=new_cfg.get("Kp"), kd=new_cfg.get("Kd"))
         else:
             should_render = False
     # should_render = True
